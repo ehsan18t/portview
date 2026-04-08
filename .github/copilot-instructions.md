@@ -43,6 +43,7 @@
 - split the work into small tasks. you can split the tasks into todos if needed.
 - maintain todos. make as many todos as needed to cover all the work that needs to be done. make sure to update the todos as you work on the project.
 - commit properly. commit by task, not by file. commit right after the task is done, not the end of the session. DO NOT PROCEED TO ANOTHER TASK BEFORE YOU COMMIT THE PREVIOUS TASK. 1 session might have tasks since we are splitting the work into small tasks.
+- Never use em dash (—) in anywhere in the codebase except for file structure or diagram or similar places.
 
 ---
 

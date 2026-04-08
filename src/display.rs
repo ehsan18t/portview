@@ -63,9 +63,14 @@ pub fn print_json(entries: &[PortEntry]) -> Result<()> {
 
 /// Truncate a process name to [`MAX_PROCESS_NAME_LEN`] characters with an
 /// ellipsis if it exceeds the limit.
+///
+/// Uses character (not byte) counting so multi-byte UTF-8 names are handled
+/// safely without panicking on char boundaries.
 fn truncate_process_name(name: &str) -> String {
-    if name.len() > MAX_PROCESS_NAME_LEN {
-        format!("{}\u{2026}", &name[..MAX_PROCESS_NAME_LEN - 1])
+    let char_count = name.chars().count();
+    if char_count > MAX_PROCESS_NAME_LEN {
+        let truncated: String = name.chars().take(MAX_PROCESS_NAME_LEN - 1).collect();
+        format!("{truncated}\u{2026}")
     } else {
         name.to_string()
     }
@@ -90,13 +95,30 @@ mod tests {
     fn long_name_truncated() {
         let name = "a".repeat(MAX_PROCESS_NAME_LEN + 5);
         let result = truncate_process_name(&name);
-        assert!(
-            result.len() <= MAX_PROCESS_NAME_LEN + 3, // ellipsis is multi-byte
-            "truncated name should be within limit"
+        assert_eq!(
+            result.chars().count(),
+            MAX_PROCESS_NAME_LEN,
+            "truncated name should be exactly MAX_PROCESS_NAME_LEN chars"
         );
         assert!(
             result.ends_with('\u{2026}'),
             "truncated name should end with ellipsis"
+        );
+    }
+
+    #[test]
+    fn multibyte_name_does_not_panic() {
+        // CJK characters are 3 bytes each in UTF-8
+        let name = "\u{4e16}\u{754c}".repeat(MAX_PROCESS_NAME_LEN);
+        let result = truncate_process_name(&name);
+        assert_eq!(
+            result.chars().count(),
+            MAX_PROCESS_NAME_LEN,
+            "truncated multi-byte name should be exactly MAX_PROCESS_NAME_LEN chars"
+        );
+        assert!(
+            result.ends_with('\u{2026}'),
+            "truncated multi-byte name should end with ellipsis"
         );
     }
 }
