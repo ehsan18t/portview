@@ -3,9 +3,15 @@
 //! Parses CLI arguments, collects socket data, applies filters, and renders
 //! output to stdout.
 
+use std::process::ExitCode;
+
 use anyhow::Result;
 use clap::Parser;
 use portview::{collector, display, filter};
+
+/// Exit code for runtime errors (failed to enumerate sockets, write errors).
+/// Usage errors (invalid flags) are handled by clap with exit code 2.
+const EXIT_RUNTIME_ERROR: u8 = 1;
 
 /// portview - list open network ports and their associated processes.
 // CLI structs inherently use multiple boolean flags for argument toggling.
@@ -38,8 +44,12 @@ struct Cli {
     json: bool,
 }
 
-fn main() -> Result<()> {
-    run()
+fn main() -> ExitCode {
+    if let Err(e) = run() {
+        eprintln!("error: {e:#}");
+        return ExitCode::from(EXIT_RUNTIME_ERROR);
+    }
+    ExitCode::SUCCESS
 }
 
 /// Application entry point, separated from `main()` for testability.

@@ -133,8 +133,8 @@ portview must run without requiring elevated privileges. However, certain socket
 | Code | Meaning                                                                              |
 | ---- | ------------------------------------------------------------------------------------ |
 | 0    | Success. Results printed normally, even if some rows are restricted                  |
-| 1    | Usage error. Invalid flag combination or missing required argument                   |
-| 2    | Runtime error. Failed to enumerate sockets, for example if the OS API is unavailable |
+| 1    | Runtime error. Failed to enumerate sockets, for example if the OS API is unavailable |
+| 2    | Usage error. Invalid flag combination or missing required argument (clap default)    |
 
 ---
 

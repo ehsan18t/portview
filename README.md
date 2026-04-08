@@ -124,8 +124,8 @@ portview runs without elevated privileges. Some sockets owned by other users or 
 | Code | Meaning                                                             |
 | ---- | ------------------------------------------------------------------- |
 | 0    | Success                                                             |
-| 1    | Usage error (invalid flag combination or missing required argument) |
-| 2    | Runtime error (failed to enumerate sockets)                         |
+| 1    | Runtime error (failed to enumerate sockets or write output)         |
+| 2    | Usage error (invalid flag combination or missing required argument) |
 
 ---
 
