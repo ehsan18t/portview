@@ -28,7 +28,7 @@ pub fn collect() -> Result<Vec<PortEntry>> {
         .map(|l| build_entry(&l, &sys, &users))
         .collect();
 
-    entries.sort_by_key(|e| e.port);
+    entries.sort_by_key(|e| (e.port, e.proto));
     Ok(entries)
 }
 
