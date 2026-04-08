@@ -3,7 +3,7 @@
 //! Applies user-specified CLI filters to the collected port entries before
 //! display.
 
-use crate::types::{PortEntry, Protocol};
+use crate::types::{PortEntry, Protocol, State};
 
 /// Options controlling which entries pass through the filter.
 pub struct FilterOptions {
@@ -32,7 +32,7 @@ pub fn apply(entries: &[PortEntry], opts: &FilterOptions) -> Vec<PortEntry> {
             if opts.udp_only && e.proto != Protocol::Udp {
                 return false;
             }
-            if opts.listen_only && e.state != "LISTEN" {
+            if opts.listen_only && e.state != State::Listen {
                 return false;
             }
             if let Some(port) = opts.port
@@ -49,13 +49,13 @@ pub fn apply(entries: &[PortEntry], opts: &FilterOptions) -> Vec<PortEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::PortEntry;
+    use crate::types::{PortEntry, State};
 
-    fn make_entry(port: u16, proto: Protocol, state: &str) -> PortEntry {
+    fn make_entry(port: u16, proto: Protocol, state: State) -> PortEntry {
         PortEntry {
             port,
             proto,
-            state: state.to_string(),
+            state,
             pid: 1234,
             process: "test".to_string(),
             user: "user".to_string(),
@@ -65,8 +65,8 @@ mod tests {
     #[test]
     fn no_filters_passes_all() {
         let entries = vec![
-            make_entry(80, Protocol::Tcp, "LISTEN"),
-            make_entry(53, Protocol::Udp, "-"),
+            make_entry(80, Protocol::Tcp, State::Listen),
+            make_entry(53, Protocol::Udp, State::NotApplicable),
         ];
         let opts = FilterOptions {
             tcp_only: false,
@@ -81,8 +81,8 @@ mod tests {
     #[test]
     fn tcp_only_filter() {
         let entries = vec![
-            make_entry(80, Protocol::Tcp, "LISTEN"),
-            make_entry(53, Protocol::Udp, "-"),
+            make_entry(80, Protocol::Tcp, State::Listen),
+            make_entry(53, Protocol::Udp, State::NotApplicable),
         ];
         let opts = FilterOptions {
             tcp_only: true,
@@ -98,8 +98,8 @@ mod tests {
     #[test]
     fn port_filter() {
         let entries = vec![
-            make_entry(80, Protocol::Tcp, "LISTEN"),
-            make_entry(443, Protocol::Tcp, "LISTEN"),
+            make_entry(80, Protocol::Tcp, State::Listen),
+            make_entry(443, Protocol::Tcp, State::Listen),
         ];
         let opts = FilterOptions {
             tcp_only: false,
@@ -119,9 +119,9 @@ mod tests {
     #[test]
     fn listen_only_excludes_non_listen() {
         let entries = vec![
-            make_entry(80, Protocol::Tcp, "LISTEN"),
-            make_entry(8080, Protocol::Tcp, "ESTABLISHED"),
-            make_entry(53, Protocol::Udp, "-"),
+            make_entry(80, Protocol::Tcp, State::Listen),
+            make_entry(8080, Protocol::Tcp, State::NotApplicable),
+            make_entry(53, Protocol::Udp, State::NotApplicable),
         ];
         let opts = FilterOptions {
             tcp_only: false,
@@ -135,15 +135,15 @@ mod tests {
             1,
             "listen_only should exclude non-LISTEN entries"
         );
-        assert_eq!(result[0].state, "LISTEN");
+        assert_eq!(result[0].state, State::Listen);
     }
 
     #[test]
     fn udp_only_filter() {
         let entries = vec![
-            make_entry(80, Protocol::Tcp, "LISTEN"),
-            make_entry(53, Protocol::Udp, "-"),
-            make_entry(5353, Protocol::Udp, "-"),
+            make_entry(80, Protocol::Tcp, State::Listen),
+            make_entry(53, Protocol::Udp, State::NotApplicable),
+            make_entry(5353, Protocol::Udp, State::NotApplicable),
         ];
         let opts = FilterOptions {
             tcp_only: false,
@@ -162,9 +162,9 @@ mod tests {
     #[test]
     fn combined_tcp_and_port_filter() {
         let entries = vec![
-            make_entry(80, Protocol::Tcp, "LISTEN"),
-            make_entry(80, Protocol::Udp, "-"),
-            make_entry(443, Protocol::Tcp, "LISTEN"),
+            make_entry(80, Protocol::Tcp, State::Listen),
+            make_entry(80, Protocol::Udp, State::NotApplicable),
+            make_entry(443, Protocol::Tcp, State::Listen),
         ];
         let opts = FilterOptions {
             tcp_only: true,
@@ -185,8 +185,8 @@ mod tests {
     #[test]
     fn no_matches_returns_empty() {
         let entries = vec![
-            make_entry(80, Protocol::Tcp, "LISTEN"),
-            make_entry(53, Protocol::Udp, "-"),
+            make_entry(80, Protocol::Tcp, State::Listen),
+            make_entry(53, Protocol::Udp, State::NotApplicable),
         ];
         let opts = FilterOptions {
             tcp_only: false,

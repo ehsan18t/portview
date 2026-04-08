@@ -22,6 +22,24 @@ impl std::fmt::Display for Protocol {
     }
 }
 
+/// Connection state for a socket entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum State {
+    /// TCP socket in LISTEN state.
+    Listen,
+    /// State not applicable (e.g. UDP sockets).
+    NotApplicable,
+}
+
+impl std::fmt::Display for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Listen => write!(f, "LISTEN"),
+            Self::NotApplicable => write!(f, "-"),
+        }
+    }
+}
+
 /// A single row in the port listing output.
 ///
 /// Each entry represents one open socket on the local machine, enriched with
@@ -32,8 +50,8 @@ pub struct PortEntry {
     pub port: u16,
     /// Protocol (TCP or UDP).
     pub proto: Protocol,
-    /// Connection state: `LISTEN` for TCP, `"-"` for UDP.
-    pub state: String,
+    /// Connection state: `Listen` for TCP, `NotApplicable` for UDP.
+    pub state: State,
     /// Process identifier owning this socket.
     pub pid: u32,
     /// Process executable name.
@@ -59,5 +77,19 @@ mod tests {
     #[test]
     fn protocol_ordering() {
         assert!(Protocol::Tcp < Protocol::Udp, "TCP should sort before UDP");
+    }
+
+    #[test]
+    fn state_display_listen() {
+        assert_eq!(State::Listen.to_string(), "LISTEN", "Listen display string");
+    }
+
+    #[test]
+    fn state_display_not_applicable() {
+        assert_eq!(
+            State::NotApplicable.to_string(),
+            "-",
+            "NotApplicable display string"
+        );
     }
 }

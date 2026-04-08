@@ -6,7 +6,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 
 fn bench_filter(c: &mut Criterion) {
     use portview::filter::{self, FilterOptions};
-    use portview::types::{PortEntry, Protocol};
+    use portview::types::{PortEntry, Protocol, State};
 
     let entries: Vec<PortEntry> = (0..500)
         .map(|i| PortEntry {
@@ -17,9 +17,9 @@ fn bench_filter(c: &mut Criterion) {
                 Protocol::Udp
             },
             state: if i % 3 == 0 {
-                "LISTEN".to_string()
+                State::Listen
             } else {
-                "ESTABLISHED".to_string()
+                State::NotApplicable
             },
             pid: 1000 + u32::from(i),
             process: format!("proc_{i}"),

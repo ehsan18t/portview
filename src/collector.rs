@@ -7,7 +7,7 @@
 use anyhow::Result;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
 
-use crate::types::{PortEntry, Protocol};
+use crate::types::{PortEntry, Protocol, State};
 
 /// Collect all open TCP and UDP sockets on the system.
 ///
@@ -41,8 +41,8 @@ fn build_entry(l: &listeners::Listener, sys: &System, users: &Users) -> PortEntr
     };
 
     let state = match proto {
-        Protocol::Tcp => "LISTEN".to_string(),
-        Protocol::Udp => "-".to_string(),
+        Protocol::Tcp => State::Listen,
+        Protocol::Udp => State::NotApplicable,
     };
 
     let user = resolve_user(l.process.pid, sys, users);

@@ -31,7 +31,7 @@ pub fn print_table(entries: &[PortEntry], show_header: bool) {
         table.add_row(vec![
             entry.port.to_string(),
             entry.proto.to_string(),
-            entry.state.clone(),
+            entry.state.to_string(),
             entry.pid.to_string(),
             process_display,
             entry.user.clone(),

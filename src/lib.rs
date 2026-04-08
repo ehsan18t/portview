@@ -5,10 +5,10 @@
 //!
 //! ## Module structure
 //!
-//! - [`types`] — `PortEntry` struct shared across all modules
-//! - [`collector`] — socket enumeration via `listeners` + process metadata via `sysinfo`
-//! - [`filter`] — applies user-specified CLI filters before display
-//! - [`display`] — renders results as an aligned table or JSON
+//! - [`types`] - `PortEntry` struct shared across all modules
+//! - [`collector`] - socket enumeration via `listeners` + process metadata via `sysinfo`
+//! - [`filter`] - applies user-specified CLI filters before display
+//! - [`display`] - renders results as an aligned table or JSON
 
 pub mod collector;
 pub mod display;
