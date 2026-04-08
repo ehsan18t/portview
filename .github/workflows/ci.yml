@@ -13,7 +13,7 @@
 name: CI
 
 on:
-  commit:
+  push:
     branches: [main]
 
 # Principle of least privilege — CI only reads source, never pushes.
