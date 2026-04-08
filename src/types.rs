@@ -32,7 +32,7 @@ pub struct PortEntry {
     pub port: u16,
     /// Protocol (TCP or UDP).
     pub proto: Protocol,
-    /// Connection state (e.g. `LISTEN`, `ESTABLISHED`). UDP entries use `"-"`.
+    /// Connection state: `LISTEN` for TCP, `"-"` for UDP.
     pub state: String,
     /// Process identifier owning this socket.
     pub pid: u32,

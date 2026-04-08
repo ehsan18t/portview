@@ -91,20 +91,20 @@ cargo install portview
 
 ## Output Columns
 
-| Column  | Description                                                |
-| ------- | ---------------------------------------------------------- |
-| PORT    | Local port number                                          |
-| PROTO   | Protocol: TCP or UDP                                       |
-| STATE   | Connection state (e.g. LISTEN, ESTABLISHED). UDP shows `-` |
-| PID     | Process identifier. Shows `-` if inaccessible              |
-| PROCESS | Process name. Shows `restricted` if PID is inaccessible    |
-| USER    | Owning user. Shows `-` if unavailable                      |
+| Column  | Description                                     |
+| ------- | ----------------------------------------------- |
+| PORT    | Local port number                               |
+| PROTO   | Protocol: TCP or UDP                            |
+| STATE   | Connection state: `LISTEN` for TCP, `-` for UDP |
+| PID     | Process identifier                              |
+| PROCESS | Process executable name                         |
+| USER    | Owning user. Shows `-` if unavailable           |
 
 ---
 
 ## Permissions
 
-portview runs without elevated privileges. Some sockets owned by other users or system accounts will show as restricted. Run with `sudo` (Linux) or as Administrator (Windows) for full visibility.
+portview runs without elevated privileges. Some sockets owned by other users or system processes may not appear in the output. Run with `sudo` (Linux) or as Administrator (Windows) for full visibility.
 
 ---
 
