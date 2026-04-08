@@ -1,17 +1,13 @@
-//! # portview — entry point
+//! # portview - entry point
 //!
 //! Parses CLI arguments, collects socket data, applies filters, and renders
 //! output to stdout.
 
-mod collector;
-mod display;
-mod filter;
-mod types;
-
 use anyhow::Result;
 use clap::Parser;
+use portview::{collector, display, filter};
 
-/// portview — list open network ports and their associated processes.
+/// portview - list open network ports and their associated processes.
 // CLI structs inherently use multiple boolean flags for argument toggling.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Parser, Debug)]
