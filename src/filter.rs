@@ -145,12 +145,9 @@ mod tests {
 
     #[test]
     fn listen_only_excludes_udp() {
-        // In practice, the collector assigns Listen to all TCP entries and
-        // NotApplicable to all UDP entries (the listeners crate only returns
-        // listening sockets). So --listen effectively filters out UDP.
         let entries = vec![
             make_entry(80, Protocol::Tcp, State::Listen),
-            make_entry(443, Protocol::Tcp, State::Listen),
+            make_entry(443, Protocol::Tcp, State::Established),
             make_entry(53, Protocol::Udp, State::NotApplicable),
         ];
         let opts = FilterOptions {
@@ -163,8 +160,8 @@ mod tests {
         let result = apply(entries, &opts);
         assert_eq!(
             result.len(),
-            2,
-            "listen_only should keep TCP (LISTEN) and exclude UDP"
+            1,
+            "listen_only should keep only LISTEN TCP sockets"
         );
         assert!(
             result.iter().all(|e| e.state == State::Listen),

@@ -23,10 +23,36 @@ impl std::fmt::Display for Protocol {
 }
 
 /// Connection state for a socket entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum State {
     /// TCP socket in LISTEN state.
     Listen,
+    /// TCP socket in ESTABLISHED state.
+    Established,
+    /// TCP socket in SYN-SENT state.
+    SynSent,
+    /// TCP socket in SYN-RECV / SYN-RECEIVED state.
+    SynReceived,
+    /// TCP socket in FIN-WAIT-1 state.
+    FinWait1,
+    /// TCP socket in FIN-WAIT-2 state.
+    FinWait2,
+    /// TCP socket in TIME-WAIT state.
+    TimeWait,
+    /// TCP socket in CLOSE state.
+    Close,
+    /// TCP socket in CLOSE-WAIT state.
+    CloseWait,
+    /// TCP socket in LAST-ACK state.
+    LastAck,
+    /// TCP socket in CLOSING state.
+    Closing,
+    /// TCP socket in NEW-SYN-RECV state.
+    NewSynReceived,
+    /// Windows-specific DELETE-TCB TCP state.
+    DeleteTcb,
+    /// TCP state could not be determined reliably.
+    Unknown,
     /// State not applicable (e.g. UDP sockets).
     NotApplicable,
 }
@@ -35,6 +61,19 @@ impl std::fmt::Display for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Listen => write!(f, "LISTEN"),
+            Self::Established => write!(f, "ESTABLISHED"),
+            Self::SynSent => write!(f, "SYN_SENT"),
+            Self::SynReceived => write!(f, "SYN_RECV"),
+            Self::FinWait1 => write!(f, "FIN_WAIT1"),
+            Self::FinWait2 => write!(f, "FIN_WAIT2"),
+            Self::TimeWait => write!(f, "TIME_WAIT"),
+            Self::Close => write!(f, "CLOSE"),
+            Self::CloseWait => write!(f, "CLOSE_WAIT"),
+            Self::LastAck => write!(f, "LAST_ACK"),
+            Self::Closing => write!(f, "CLOSING"),
+            Self::NewSynReceived => write!(f, "NEW_SYN_RECV"),
+            Self::DeleteTcb => write!(f, "DELETE_TCB"),
+            Self::Unknown => write!(f, "UNKNOWN"),
             Self::NotApplicable => write!(f, "-"),
         }
     }
@@ -111,6 +150,15 @@ mod tests {
     #[test]
     fn state_display_listen() {
         assert_eq!(State::Listen.to_string(), "LISTEN", "Listen display string");
+    }
+
+    #[test]
+    fn state_display_established() {
+        assert_eq!(
+            State::Established.to_string(),
+            "ESTABLISHED",
+            "Established display string"
+        );
     }
 
     #[test]

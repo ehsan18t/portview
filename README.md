@@ -113,7 +113,7 @@ cargo install portview
 | `--version`    | `-V`  | Print the version string and exit                   |
 | `--help`       | `-h`  | Print usage information and exit                    |
 
-**Note:** `--tcp` and `--udp` are mutually exclusive.
+**Note:** `--tcp` and `--udp` are mutually exclusive. `--listen` also conflicts with `--udp` because UDP sockets do not have a LISTEN state.
 
 ---
 
@@ -135,7 +135,7 @@ Additional columns with `--full`:
 
 | Column | Description                                     |
 | ------ | ----------------------------------------------- |
-| STATE  | Connection state: `LISTEN` for TCP, `-` for UDP |
+| STATE  | TCP state such as `LISTEN` or `ESTABLISHED`; UDP shows `-` |
 | USER   | Owning user. Shows `-` if unavailable           |
 
 ---

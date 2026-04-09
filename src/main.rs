@@ -28,7 +28,7 @@ struct Cli {
     udp: bool,
 
     /// Show only sockets in LISTEN state (TCP only).
-    #[arg(short = 'l', long = "listen")]
+    #[arg(short = 'l', long = "listen", conflicts_with = "udp")]
     listen: bool,
 
     /// Filter results to a specific port number.
@@ -94,4 +94,26 @@ fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn listen_conflicts_with_udp() {
+        assert!(
+            Cli::try_parse_from(["portview", "--listen", "--udp"]).is_err(),
+            "--listen and --udp should be rejected together"
+        );
+    }
+
+    #[test]
+    fn listen_without_udp_is_allowed() {
+        assert!(
+            Cli::try_parse_from(["portview", "--listen"]).is_ok(),
+            "--listen should remain valid on its own"
+        );
+    }
 }
