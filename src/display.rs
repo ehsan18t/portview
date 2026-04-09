@@ -5,7 +5,7 @@
 
 use std::io::{self, Write};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use comfy_table::{ContentArrangement, Table};
 
 use crate::types::{PortEntry, format_uptime};
@@ -81,7 +81,7 @@ pub fn print_table(entries: &[PortEntry], opts: &DisplayOptions) -> Result<()> {
         }
     }
 
-    writeln!(io::stdout().lock(), "{table}")?;
+    writeln!(io::stdout().lock(), "{table}").context("failed to write table to stdout")?;
     Ok(())
 }
 
@@ -89,8 +89,9 @@ pub fn print_table(entries: &[PortEntry], opts: &DisplayOptions) -> Result<()> {
 ///
 /// Returns an error if serialization or writing to stdout fails.
 pub fn print_json(entries: &[PortEntry]) -> Result<()> {
-    let json = serde_json::to_string_pretty(entries)?;
-    writeln!(io::stdout().lock(), "{json}")?;
+    let json =
+        serde_json::to_string_pretty(entries).context("failed to serialize entries to JSON")?;
+    writeln!(io::stdout().lock(), "{json}").context("failed to write JSON to stdout")?;
     Ok(())
 }
 
