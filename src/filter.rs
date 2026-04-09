@@ -85,7 +85,8 @@ fn is_relevant(entry: &PortEntry) -> bool {
     }
 
     let name = entry.process.strip_suffix(".exe").unwrap_or(&entry.process);
-    RELEVANT_PROCESSES.contains(&name)
+    let lower = name.to_ascii_lowercase();
+    RELEVANT_PROCESSES.contains(&lower.as_str())
 }
 
 /// Apply the given filter options to a slice of entries.
@@ -357,5 +358,13 @@ mod tests {
         entry.process = "nginx.exe".to_string();
         let result = apply(&[entry], &default_filter());
         assert_eq!(result.len(), 1, "nginx.exe should be recognized");
+    }
+
+    #[test]
+    fn relevance_filter_case_insensitive() {
+        let mut entry = make_entry(3000, Protocol::Tcp, State::Listen);
+        entry.process = "Python".to_string();
+        let result = apply(&[entry], &default_filter());
+        assert_eq!(result.len(), 1, "capitalized 'Python' should match");
     }
 }

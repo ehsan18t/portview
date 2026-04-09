@@ -106,8 +106,9 @@ pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
 #[must_use]
 pub fn detect_from_process(process_name: &str) -> Option<&'static str> {
     let name = process_name.strip_suffix(".exe").unwrap_or(process_name);
+    let lower = name.to_ascii_lowercase();
 
-    match name {
+    match lower.as_str() {
         "postgres" | "postgresql" => Some("PostgreSQL"),
         "mysqld" | "mysql" => Some("MySQL"),
         "mariadbd" | "mariadb" => Some("MariaDB"),
@@ -250,6 +251,13 @@ mod tests {
     #[test]
     fn process_windows_exe_suffix() {
         assert_eq!(detect_from_process("nginx.exe"), Some("Nginx"));
+    }
+
+    #[test]
+    fn process_case_insensitive() {
+        assert_eq!(detect_from_process("Nginx"), Some("Nginx"));
+        assert_eq!(detect_from_process("POSTGRES"), Some("PostgreSQL"));
+        assert_eq!(detect_from_process("Node"), Some("Node.js"));
     }
 
     #[test]
