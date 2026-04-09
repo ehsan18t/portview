@@ -30,8 +30,10 @@ pub fn detect_from_image(info: &ContainerInfo) -> Option<&'static str> {
         s if s.starts_with("postgres") => Some("PostgreSQL"),
         s if s.starts_with("mysql") => Some("MySQL"),
         s if s.starts_with("mariadb") => Some("MariaDB"),
-        s if s.starts_with("mongo") => Some("MongoDB"),
-        s if s.starts_with("redis") => Some("Redis"),
+        // Exact "mongo" or "mongodb*" to avoid false positives (e.g. "mongo-express").
+        s if s == "mongo" || s.starts_with("mongodb") => Some("MongoDB"),
+        // Exact "redis" or "redis-stack*" to avoid false positives (e.g. "redis-commander").
+        s if s == "redis" || s.starts_with("redis-stack") => Some("Redis"),
         s if s.starts_with("valkey") => Some("Valkey"),
         s if s.starts_with("memcached") => Some("Memcached"),
         s if s.starts_with("nginx") => Some("Nginx"),
@@ -45,8 +47,10 @@ pub fn detect_from_image(info: &ContainerInfo) -> Option<&'static str> {
         s if s.starts_with("traefik") => Some("Traefik"),
         // Exact match to avoid false positives (e.g. "node-exporter").
         "node" => Some("Node.js"),
-        s if s.starts_with("python") => Some("Python"),
-        s if s.starts_with("ruby") => Some("Ruby"),
+        // Exact match to avoid false positives (e.g. "python-linter").
+        "python" | "python3" => Some("Python"),
+        // Exact match to avoid false positives (e.g. "rubygems-mirror").
+        "ruby" => Some("Ruby"),
         // Exact match to avoid false positives (e.g. "golang-migrate").
         "golang" | "go" => Some("Go"),
         // Exact match to avoid false positives (e.g. "rust-analyzer").
@@ -335,6 +339,76 @@ mod tests {
             image: "mcr.microsoft.com/dotnet/aspnet:8.0".to_string(),
         };
         assert_eq!(detect_from_image(&info), Some(".NET"));
+    }
+
+    #[test]
+    fn image_mongo_express_not_mongodb() {
+        let info = ContainerInfo {
+            name: "admin".to_string(),
+            image: "mongo-express:latest".to_string(),
+        };
+        assert_eq!(
+            detect_from_image(&info),
+            None,
+            "mongo-express should not match MongoDB"
+        );
+    }
+
+    #[test]
+    fn image_mongodb_community_server_matches() {
+        let info = ContainerInfo {
+            name: "db".to_string(),
+            image: "mongodb/mongodb-community-server:7.0".to_string(),
+        };
+        assert_eq!(detect_from_image(&info), Some("MongoDB"));
+    }
+
+    #[test]
+    fn image_redis_commander_not_redis() {
+        let info = ContainerInfo {
+            name: "ui".to_string(),
+            image: "redis-commander:latest".to_string(),
+        };
+        assert_eq!(
+            detect_from_image(&info),
+            None,
+            "redis-commander should not match Redis"
+        );
+    }
+
+    #[test]
+    fn image_redis_stack_matches() {
+        let info = ContainerInfo {
+            name: "cache".to_string(),
+            image: "redis/redis-stack:latest".to_string(),
+        };
+        assert_eq!(detect_from_image(&info), Some("Redis"));
+    }
+
+    #[test]
+    fn image_python_linter_not_python() {
+        let info = ContainerInfo {
+            name: "lint".to_string(),
+            image: "python-linter:latest".to_string(),
+        };
+        assert_eq!(
+            detect_from_image(&info),
+            None,
+            "python-linter should not match Python"
+        );
+    }
+
+    #[test]
+    fn image_rubygems_mirror_not_ruby() {
+        let info = ContainerInfo {
+            name: "mirror".to_string(),
+            image: "rubygems-mirror:latest".to_string(),
+        };
+        assert_eq!(
+            detect_from_image(&info),
+            None,
+            "rubygems-mirror should not match Ruby"
+        );
     }
 
     #[test]
