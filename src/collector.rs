@@ -735,12 +735,15 @@ fn is_docker_proxy_process(process_name: &str) -> bool {
 }
 
 fn strip_windows_exe_suffix(process_name: &str) -> &str {
-    if process_name.len() >= 4
-        && process_name[process_name.len() - 4..].eq_ignore_ascii_case(".exe")
-    {
-        &process_name[..process_name.len() - 4]
-    } else {
-        process_name
+    let Some(prefix_len) = process_name.len().checked_sub(4) else {
+        return process_name;
+    };
+
+    match process_name.get(prefix_len..) {
+        Some(suffix) if suffix.eq_ignore_ascii_case(".exe") => {
+            process_name.get(..prefix_len).unwrap_or(process_name)
+        }
+        _ => process_name,
     }
 }
 
@@ -1046,6 +1049,11 @@ mod tests {
         assert!(is_docker_proxy_process("COM.DOCKER.BACKEND.EXE"));
         assert!(is_docker_proxy_process("vpnkit"));
         assert!(!is_docker_proxy_process("nginx"));
+    }
+
+    #[test]
+    fn docker_proxy_process_name_stripping_handles_non_ascii_input() {
+        assert!(!is_docker_proxy_process("éabc"));
     }
 
     #[test]

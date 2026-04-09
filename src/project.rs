@@ -144,28 +144,24 @@ pub fn home_dir() -> Option<PathBuf> {
 
 /// Check whether a directory contains any project marker file.
 ///
-/// Exact marker names are checked with direct filesystem probes first to avoid
-/// scanning large directories just to find common root files like
-/// `package.json` or `Cargo.toml`. A directory scan is only used as a fallback
-/// for extension-based markers such as `.csproj`.
+/// Scans the directory once and checks both exact marker names and extension
+/// markers from the collected entry names.
 pub(crate) fn has_marker(dir: &Path) -> bool {
-    if PROJECT_MARKERS
-        .iter()
-        .any(|marker| dir.join(marker).exists())
-    {
-        return true;
-    }
-
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
 
     entries.filter_map(Result::ok).any(|entry| {
         let file_name = entry.file_name();
-        std::path::Path::new(file_name.as_os_str())
-            .extension()
+        let path = std::path::Path::new(file_name.as_os_str());
+
+        path.file_name()
             .and_then(OsStr::to_str)
-            .is_some_and(|ext| PROJECT_MARKER_EXTENSIONS.contains(&ext))
+            .is_some_and(|name| PROJECT_MARKERS.contains(&name))
+            || path
+                .extension()
+                .and_then(OsStr::to_str)
+                .is_some_and(|ext| PROJECT_MARKER_EXTENSIONS.contains(&ext))
     })
 }
 

@@ -95,37 +95,15 @@ const CONFIG_EXTENSIONS: &[(&str, &str)] = &[("csproj", ".NET"), ("fsproj", ".NE
 
 /// Detect app label by scanning config files in a project root.
 ///
-/// Checks direct marker paths first and only falls back to scanning the
-/// directory for prefix or extension matches when needed.
+/// Scans the directory once and preserves the configured pattern priority.
 #[must_use]
 pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
-    for (pattern, label, match_kind) in CONFIG_PATTERNS {
-        if matches_config_path(project_root, pattern, *match_kind) {
-            return Some(label);
-        }
-    }
-
-    if project_root.join("Gemfile").exists() && project_root.join("config.ru").exists() {
-        return Some("Ruby (Rack)");
-    }
-
-    detect_from_directory_scan(project_root)
-}
-
-fn matches_config_path(project_root: &Path, pattern: &str, match_kind: ConfigMatchKind) -> bool {
-    match match_kind {
-        ConfigMatchKind::Exact => project_root.join(pattern).exists(),
-        ConfigMatchKind::Prefix => COMMON_CONFIG_SUFFIXES
-            .iter()
-            .any(|suffix| project_root.join(format!("{pattern}{suffix}")).exists()),
-    }
-}
-
-fn detect_from_directory_scan(project_root: &Path) -> Option<&'static str> {
     let Ok(entries) = std::fs::read_dir(project_root) else {
         return None;
     };
 
+    let mut matched_patterns = [false; CONFIG_PATTERNS.len()];
+    let mut matched_extensions = [false; CONFIG_EXTENSIONS.len()];
     let mut has_gemfile = false;
     let mut has_config_ru = false;
 
@@ -138,29 +116,46 @@ fn detect_from_directory_scan(project_root: &Path) -> Option<&'static str> {
         has_gemfile |= name == "Gemfile";
         has_config_ru |= name == "config.ru";
 
-        for (pattern, label, match_kind) in CONFIG_PATTERNS {
-            let matches = match match_kind {
-                ConfigMatchKind::Exact => name == *pattern,
-                ConfigMatchKind::Prefix => name.starts_with(pattern),
-            };
-
-            if matches {
-                return Some(label);
-            }
+        for (index, (pattern, _, match_kind)) in CONFIG_PATTERNS.iter().enumerate() {
+            matched_patterns[index] |= matches_config_name(name, pattern, *match_kind);
         }
 
         if let Some(ext) = std::path::Path::new(name)
             .extension()
             .and_then(OsStr::to_str)
-            && let Some((_, label)) = CONFIG_EXTENSIONS
-                .iter()
-                .find(|(target_ext, _)| *target_ext == ext)
         {
+            for (index, (target_ext, _)) in CONFIG_EXTENSIONS.iter().enumerate() {
+                matched_extensions[index] |= *target_ext == ext;
+            }
+        }
+    }
+
+    for (index, (_, label, _)) in CONFIG_PATTERNS.iter().enumerate() {
+        if matched_patterns[index] {
             return Some(label);
         }
     }
 
-    (has_gemfile && has_config_ru).then_some("Ruby (Rack)")
+    if has_gemfile && has_config_ru {
+        return Some("Ruby (Rack)");
+    }
+
+    for (index, (_, label)) in CONFIG_EXTENSIONS.iter().enumerate() {
+        if matched_extensions[index] {
+            return Some(label);
+        }
+    }
+
+    None
+}
+
+fn matches_config_name(name: &str, pattern: &str, match_kind: ConfigMatchKind) -> bool {
+    match match_kind {
+        ConfigMatchKind::Exact => name == pattern,
+        ConfigMatchKind::Prefix => name
+            .strip_prefix(pattern)
+            .is_some_and(|suffix| COMMON_CONFIG_SUFFIXES.contains(&suffix)),
+    }
 }
 
 const COMMON_CONFIG_SUFFIXES: &[&str] = &["", ".js", ".cjs", ".mjs", ".ts", ".cts", ".mts"];
@@ -237,11 +232,24 @@ const PROCESS_MAP: &[(&str, &str)] = &[
 /// Detect app label from a process executable name.
 #[must_use]
 pub fn detect_from_process(process_name: &str) -> Option<&'static str> {
-    let name = process_name.strip_suffix(".exe").unwrap_or(process_name);
+    let name = strip_windows_exe_suffix(process_name);
     PROCESS_MAP
         .iter()
         .find(|(key, _)| name.eq_ignore_ascii_case(key))
         .map(|(_, label)| *label)
+}
+
+fn strip_windows_exe_suffix(process_name: &str) -> &str {
+    let Some(prefix_len) = process_name.len().checked_sub(4) else {
+        return process_name;
+    };
+
+    match process_name.get(prefix_len..) {
+        Some(suffix) if suffix.eq_ignore_ascii_case(".exe") => {
+            process_name.get(..prefix_len).unwrap_or(process_name)
+        }
+        _ => process_name,
+    }
 }
 
 /// Detect the app label for a port entry using all available information.
@@ -431,6 +439,11 @@ mod tests {
     #[test]
     fn process_windows_exe_suffix() {
         assert_eq!(detect_from_process("nginx.exe"), Some("Nginx"));
+    }
+
+    #[test]
+    fn process_windows_exe_suffix_is_case_insensitive() {
+        assert_eq!(detect_from_process("NGINX.EXE"), Some("Nginx"));
     }
 
     #[test]

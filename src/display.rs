@@ -102,16 +102,28 @@ pub fn print_json(entries: &[PortEntry]) -> Result<()> {
 /// Truncate a process name to [`MAX_PROCESS_NAME_LEN`] characters with an
 /// ellipsis if it exceeds the limit.
 ///
-/// Uses character (not byte) counting so multi-byte UTF-8 names are handled
-/// safely without panicking on char boundaries.
+/// Uses character boundaries and stops after the first 21 characters, so
+/// oversized names are not traversed twice.
 fn truncate_process_name(name: &str) -> String {
-    let char_count = name.chars().count();
-    if char_count > MAX_PROCESS_NAME_LEN {
-        let truncated: String = name.chars().take(MAX_PROCESS_NAME_LEN - 1).collect();
-        format!("{truncated}\u{2026}")
-    } else {
-        name.to_string()
+    let mut ellipsis_index = None;
+    let mut needs_truncation = false;
+
+    for (index, (byte_index, _)) in name.char_indices().enumerate() {
+        if index == MAX_PROCESS_NAME_LEN - 1 {
+            ellipsis_index = Some(byte_index);
+        } else if index == MAX_PROCESS_NAME_LEN {
+            needs_truncation = true;
+            break;
+        }
     }
+
+    if !needs_truncation {
+        return name.to_string();
+    }
+
+    let mut truncated = name[..ellipsis_index.unwrap_or_default()].to_string();
+    truncated.push('\u{2026}');
+    truncated
 }
 
 #[cfg(test)]
