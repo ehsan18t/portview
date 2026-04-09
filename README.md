@@ -185,6 +185,8 @@ portview runs without elevated privileges. Some sockets owned by other users or 
 ## Contributing
 
 See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for development setup and guidelines.
+CI workflow actions are pinned to full commit SHAs for supply-chain security;
+preserve the trailing version comments when updating them.
 
 ---
 

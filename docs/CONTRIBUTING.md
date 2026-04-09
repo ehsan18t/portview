@@ -44,6 +44,10 @@ All of the following must pass before merging:
 | 6    | `cargo doc --no-deps`         | Documentation builds      |
 | 7    | `cargo deny check`            | No vulnerable/banned deps |
 
+Workflow dependencies in `.github/workflows/` are pinned to full commit SHAs.
+When updating an action, keep the trailing version comment (for example `# v6`)
+so reviewers can see the intended upstream release at a glance.
+
 ---
 
 ## Project Structure
