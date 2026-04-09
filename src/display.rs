@@ -62,7 +62,7 @@ pub fn print_table(entries: &[PortEntry], opts: &DisplayOptions) -> Result<()> {
             table.add_row(vec![
                 entry.port.to_string(),
                 entry.proto.to_string(),
-                local_addr.clone(),
+                local_addr,
                 entry.state.to_string(),
                 process_display,
                 entry.pid.to_string(),
