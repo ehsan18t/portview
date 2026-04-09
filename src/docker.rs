@@ -164,6 +164,12 @@ fn fetch_containers_json() -> Option<String> {
         r"\\.\pipe\podman-machine-default",
     ];
 
+    // NOTE: Windows named pipes opened via std::fs do not support read
+    // timeouts. If the daemon is hung, `send_http_request` will block
+    // indefinitely in the background thread. The main thread is
+    // protected by `DAEMON_TIMEOUT` via `recv_timeout`, and the OS
+    // terminates all threads when the CLI process exits, so this is
+    // acceptable for a short-lived CLI tool.
     for path in &pipe_paths {
         if let Ok(mut stream) = OpenOptions::new().read(true).write(true).open(path) {
             return send_http_request(&mut stream);
