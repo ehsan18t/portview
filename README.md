@@ -107,7 +107,7 @@ cargo install portview
 | `--tcp`        | `-t`  | Show only TCP sockets                              |
 | `--udp`        | `-u`  | Show only UDP sockets                              |
 | `--listen`     | `-l`  | Show only sockets in LISTEN state (TCP only)       |
-| `--port <num>` | `-p`  | Filter results to the specified port number        |
+| `--port <num>` | `-p`  | Filter results to the specified port number and bypass the smart filter |
 | `--no-header`  |       | Suppress the column header row                     |
 | `--json`       |       | Output results as a JSON array                     |
 | `--version`    | `-V`  | Print the version string and exit                  |
@@ -143,6 +143,8 @@ Additional columns with `--full`:
 ## Smart Features
 
 **Developer-relevant filter:** By default, portview only shows ports belonging to known developer tools, detected projects, or Docker containers. Use `--all` to see everything.
+
+**Explicit port queries:** `--port <num>` always shows matching sockets even when the owning process is not recognized as developer-relevant.
 
 **Project detection:** Walks upward from a process working directory looking for project markers (`package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, etc.) to identify the project name.
 

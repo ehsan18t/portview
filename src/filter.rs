@@ -37,34 +37,36 @@ fn is_relevant(entry: &PortEntry) -> bool {
 
 /// Apply the given filter options to a collection of entries.
 ///
-/// Takes ownership of the input to avoid cloning every surviving entry.
-/// Returns a new `Vec` containing only the entries that match all active
-/// filters. Filters are combined with AND semantics.
+/// Filters the input vector in place and returns the surviving entries.
+/// An explicit port query bypasses the developer-relevance filter so
+/// `--port` never hides a matching socket just because the process is not
+/// recognized.
 #[must_use]
-pub fn apply(entries: Vec<PortEntry>, opts: &FilterOptions) -> Vec<PortEntry> {
+pub fn apply(mut entries: Vec<PortEntry>, opts: &FilterOptions) -> Vec<PortEntry> {
+    let bypass_relevance = opts.show_all || opts.port.is_some();
+
+    entries.retain(|e| {
+        if opts.tcp_only && e.proto != Protocol::Tcp {
+            return false;
+        }
+        if opts.udp_only && e.proto != Protocol::Udp {
+            return false;
+        }
+        if opts.listen_only && e.state != State::Listen {
+            return false;
+        }
+        if let Some(port) = opts.port
+            && e.port != port
+        {
+            return false;
+        }
+        if !bypass_relevance && !is_relevant(e) {
+            return false;
+        }
+        true
+    });
+
     entries
-        .into_iter()
-        .filter(|e| {
-            if opts.tcp_only && e.proto != Protocol::Tcp {
-                return false;
-            }
-            if opts.udp_only && e.proto != Protocol::Udp {
-                return false;
-            }
-            if opts.listen_only && e.state != State::Listen {
-                return false;
-            }
-            if let Some(port) = opts.port
-                && e.port != port
-            {
-                return false;
-            }
-            if !opts.show_all && !is_relevant(e) {
-                return false;
-            }
-            true
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -141,6 +143,26 @@ mod tests {
             "port filter should match exactly one entry"
         );
         assert_eq!(result[0].port, 443);
+    }
+
+    #[test]
+    fn port_filter_bypasses_relevance_filter() {
+        let entries = vec![make_entry(8080, Protocol::Tcp, State::Listen)];
+        let opts = FilterOptions {
+            tcp_only: false,
+            udp_only: false,
+            listen_only: false,
+            port: Some(8080),
+            show_all: false,
+        };
+
+        let result = apply(entries, &opts);
+        assert_eq!(
+            result.len(),
+            1,
+            "explicit port queries should bypass relevance filtering"
+        );
+        assert_eq!(result[0].port, 8080, "matching port should remain visible");
     }
 
     #[test]

@@ -31,7 +31,7 @@ struct Cli {
     #[arg(short = 'l', long = "listen", conflicts_with = "udp")]
     listen: bool,
 
-    /// Filter results to a specific port number.
+    /// Filter results to a specific port number and bypass smart relevance filtering.
     #[arg(short = 'p', long = "port")]
     port: Option<u16>,
 
