@@ -14,4 +14,5 @@ pub mod collector;
 pub mod display;
 pub mod docker;
 pub mod filter;
+pub mod project;
 pub mod types;
