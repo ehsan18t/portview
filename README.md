@@ -99,19 +99,19 @@ cargo install portview
 
 ## CLI Reference
 
-| Flag           | Short | Description                                         |
-| -------------- | ----- | --------------------------------------------------- |
-| `--all`        | `-a`  | Show all ports (bypass developer-relevance filter)  |
-| `--full`       | `-f`  | Show all columns (adds STATE, USER)                 |
-| `--compact`    | `-c`  | Use compact borderless table style                  |
-| `--tcp`        | `-t`  | Show only TCP sockets                               |
-| `--udp`        | `-u`  | Show only UDP sockets                               |
-| `--listen`     | `-l`  | Show only sockets in LISTEN state (TCP only)        |
-| `--port <num>` | `-p`  | Filter results to the specified port number         |
-| `--no-header`  |       | Suppress the column header row                      |
-| `--json`       |       | Output results as a JSON array                      |
-| `--version`    | `-V`  | Print the version string and exit                   |
-| `--help`       | `-h`  | Print usage information and exit                    |
+| Flag           | Short | Description                                        |
+| -------------- | ----- | -------------------------------------------------- |
+| `--all`        | `-a`  | Show all ports (bypass developer-relevance filter) |
+| `--full`       | `-f`  | Show all columns (adds STATE, USER)                |
+| `--compact`    | `-c`  | Use compact borderless table style                 |
+| `--tcp`        | `-t`  | Show only TCP sockets                              |
+| `--udp`        | `-u`  | Show only UDP sockets                              |
+| `--listen`     | `-l`  | Show only sockets in LISTEN state (TCP only)       |
+| `--port <num>` | `-p`  | Filter results to the specified port number        |
+| `--no-header`  |       | Suppress the column header row                     |
+| `--json`       |       | Output results as a JSON array                     |
+| `--version`    | `-V`  | Print the version string and exit                  |
+| `--help`       | `-h`  | Print usage information and exit                   |
 
 **Note:** `--tcp` and `--udp` are mutually exclusive. `--listen` also conflicts with `--udp` because UDP sockets do not have a LISTEN state.
 
@@ -129,14 +129,14 @@ Default columns:
 | PID     | Process identifier                                       |
 | PROJECT | Project directory name or Docker container name          |
 | APP     | Detected app/framework (e.g. Next.js, PostgreSQL, Redis) |
-| UPTIME  | Process uptime (e.g. 2h 15m, 1d 3h)                     |
+| UPTIME  | Process uptime (e.g. 2h 15m, 1d 3h)                      |
 
 Additional columns with `--full`:
 
-| Column | Description                                     |
-| ------ | ----------------------------------------------- |
+| Column | Description                                                |
+| ------ | ---------------------------------------------------------- |
 | STATE  | TCP state such as `LISTEN` or `ESTABLISHED`; UDP shows `-` |
-| USER   | Owning user. Shows `-` if unavailable           |
+| USER   | Owning user. Shows `-` if unavailable                      |
 
 ---
 

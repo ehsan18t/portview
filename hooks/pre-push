@@ -10,9 +10,10 @@
 #   1. cargo fmt --check   — formatting
 #   2. cargo clippy        — lint violations (deny level from Cargo.toml)
 #   3. cargo test          — all tests pass
-#   4. cargo build         — debug build compiles
-#   5. cargo doc           — documentation builds
-#   6. cargo deny check    — dependency audit (if cargo-deny is installed)
+#   4. cargo bench --no-run — benchmarks compile
+#   5. cargo build         — debug build compiles
+#   6. cargo doc           — documentation builds with CI rustdoc flags
+#   7. cargo deny check    — dependency audit (if cargo-deny is installed)
 
 set -e
 
@@ -22,7 +23,7 @@ echo "╚═══════════════════════�
 echo ""
 
 # Gate 1: Formatting
-echo "→ [1/6] Checking formatting..."
+echo "→ [1/7] Checking formatting..."
 if ! cargo fmt --all -- --check; then
     echo ""
     echo "✗ FORMATTING FAILED"
@@ -33,7 +34,7 @@ fi
 echo "  ✓ Formatting OK"
 
 # Gate 2: Clippy (uses deny-level lints from Cargo.toml)
-echo "→ [2/6] Running clippy..."
+echo "→ [2/7] Running clippy..."
 if ! cargo clippy --all-targets -- -D warnings; then
     echo ""
     echo "✗ CLIPPY FAILED"
@@ -43,7 +44,7 @@ fi
 echo "  ✓ Clippy OK"
 
 # Gate 3: Tests
-echo "→ [3/6] Running tests..."
+echo "→ [3/7] Running tests..."
 if ! cargo test --all-targets; then
     echo ""
     echo "✗ TESTS FAILED"
@@ -52,9 +53,29 @@ if ! cargo test --all-targets; then
 fi
 echo "  ✓ Tests OK"
 
-# Gate 4: Documentation
-echo "→ [4/6] Building docs..."
-if ! RUSTDOCFLAGS="-D warnings" cargo doc --no-deps; then
+# Gate 4: Benchmarks
+echo "→ [4/7] Compiling benchmarks..."
+if ! cargo bench --no-run; then
+    echo ""
+    echo "✗ BENCHMARK COMPILE FAILED"
+    echo "  Fix the benchmark build errors, then try pushing again."
+    exit 1
+fi
+echo "  ✓ Benchmarks OK"
+
+# Gate 5: Debug build
+echo "→ [5/7] Building debug binary..."
+if ! cargo build; then
+    echo ""
+    echo "✗ DEBUG BUILD FAILED"
+    echo "  Fix the build errors, then try pushing again."
+    exit 1
+fi
+echo "  ✓ Debug build OK"
+
+# Gate 6: Documentation
+echo "→ [6/7] Building docs..."
+if ! RUSTDOCFLAGS="-D warnings -D rustdoc::bare_urls -D rustdoc::invalid_rust_codeblocks -D rustdoc::private_intra_doc_links -D rustdoc::unescaped_backticks" cargo doc --no-deps; then
     echo ""
     echo "✗ DOCUMENTATION BUILD FAILED"
     echo "  Fix the doc errors, then try pushing again."
@@ -62,8 +83,8 @@ if ! RUSTDOCFLAGS="-D warnings" cargo doc --no-deps; then
 fi
 echo "  ✓ Docs OK"
 
-# Gate 5: Dependency audit (optional — only if cargo-deny is installed)
-echo "→ [5/6] Auditing dependencies..."
+# Gate 7: Dependency audit (optional — only if cargo-deny is installed)
+echo "→ [7/7] Auditing dependencies..."
 if command -v cargo-deny >/dev/null 2>&1; then
     if ! cargo deny check 2>/dev/null; then
         # Advisory DB fetch can fail due to stale cache; clear and retry
@@ -83,16 +104,6 @@ if command -v cargo-deny >/dev/null 2>&1; then
 else
     echo "  ⊘ cargo-deny not installed, skipping (install: cargo install cargo-deny)"
 fi
-
-# Gate 6: Debug build
-echo "→ [6/6] Building debug binary..."
-if ! cargo build; then
-    echo ""
-    echo "✗ DEBUG BUILD FAILED"
-    echo "  Fix the build errors, then try pushing again."
-    exit 1
-fi
-echo "  ✓ Debug build OK"
 
 echo ""
 echo "✓ All quality gates passed. Pushing..."

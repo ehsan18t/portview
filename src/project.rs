@@ -5,7 +5,7 @@
 //!
 //! The upward walk stops at the user's home directory to avoid matching
 //! stray marker files (e.g. an accidental `package.json` in `~`), and
-//! is capped at [`MAX_WALK_DEPTH`] levels as a safety net.
+//! is capped at `MAX_WALK_DEPTH` levels as a safety net.
 
 use std::path::{Path, PathBuf};
 
@@ -82,7 +82,7 @@ pub fn detect_project_root(
 /// ceilings:
 ///
 /// - `home` (when provided).
-/// - [`MAX_WALK_DEPTH`] levels above `start`.
+/// - `MAX_WALK_DEPTH` levels above `start`.
 /// - The filesystem root.
 ///
 /// Callers should resolve the home directory once and pass it in so
@@ -119,7 +119,7 @@ pub fn find_from_dir(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
 ///
 /// Uses `HOME` on Unix and `USERPROFILE` on Windows. Returns `None`
 /// when the environment variable is unset, in which case only the
-/// [`MAX_WALK_DEPTH`] limit guards against over-traversal.
+/// `MAX_WALK_DEPTH` guards against over-traversal.
 ///
 /// Callers should call this **once** and pass the result into
 /// [`find_from_dir`] / [`detect_project_root`] to avoid repeated

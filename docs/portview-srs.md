@@ -4,6 +4,11 @@
 **Date:** April 2026
 **Status:** Draft
 
+> Note: the current implementation follows the enriched display design in
+> `docs/superpowers/specs/2026-04-09-enriched-port-display-design.md`.
+> This SRS remains a historical draft and some sections below predate that
+> approved design.
+
 ---
 
 ## Table of Contents
@@ -258,13 +263,13 @@ display.rs  --> stdout (table or JSON)
 
 The following features are noted for potential future versions and are not part of this specification.
 
-| Feature                    | Notes                                                                                                                |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| --watch live mode          | Auto-refreshing output at a configurable interval, similar to running watch -n1 portview                             |
-| TUI interface              | An interactive terminal UI built with ratatui, with keyboard navigation and inline filtering                         |
-| macOS support              | The listeners crate already supports macOS, so adding it to the target matrix would be straightforward               |
-| --sort flag                | Allow sorting by columns other than port number, such as by PID or process name                                      |
-| Well-known port labels     | An optional annotation column showing the common service name for known ports, for example 22 as SSH or 443 as HTTPS |
-| Package manager publishing | Publishing to Homebrew, winget, and popular Linux package repositories such as the AUR                               |
+| Feature                    | Notes                                                                                                                                                                                           |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| --watch live mode          | Auto-refreshing output at a configurable interval, similar to running watch -n1 portview                                                                                                        |
+| TUI interface              | An interactive terminal UI built with ratatui, with keyboard navigation and inline filtering                                                                                                    |
+| macOS support              | The listeners crate already supports macOS, so adding it to the target matrix would be straightforward                                                                                          |
+| --sort flag                | Allow sorting by columns other than port number, such as by PID or process name                                                                                                                 |
+| Well-known port labels     | An optional annotation column showing the common service name for known ports, for example 22 as SSH or 443 as HTTPS                                                                            |
+| Package manager publishing | Publishing to Homebrew, winget, and popular Linux package repositories such as the AUR                                                                                                          |
 | Custom framework rules     | A user config file (e.g. ~/.config/portview/frameworks.toml) allowing custom detection rules that map process names, config files, or Docker images to app labels without modifying source code |
 

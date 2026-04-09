@@ -53,9 +53,12 @@ src/
   main.rs        — CLI parsing, command dispatch
   lib.rs         — library crate root (module re-exports for benchmarks)
   types.rs       — PortEntry struct shared across all modules
-  collector.rs   — socket enumeration via listeners + sysinfo
-  filter.rs      — user-specified filtering logic
+  collector.rs   — socket enumeration + enrichment orchestration
+  filter.rs      — user-specified and relevance filtering logic
   display.rs     — table and JSON rendering
+  docker.rs      — Docker/Podman port detection via socket API
+  framework.rs   — app/framework detection from images, configs, processes
+  project.rs     — project root detection via cwd/cmd marker walk
 ```
 
 ### Architecture Boundaries
@@ -63,6 +66,7 @@ src/
 - `collector.rs` owns all OS interaction. No platform-specific code elsewhere.
 - `filter.rs` owns all filtering logic.
 - `display.rs` owns all rendering logic.
+- `docker.rs`, `framework.rs`, and `project.rs` provide best-effort enrichment only.
 
 ---
 
