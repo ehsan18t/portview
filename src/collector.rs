@@ -799,23 +799,10 @@ fn is_docker_proxy_process(process_name: &str) -> bool {
     const DOCKER_PROXY_PROCESSES: &[&str] =
         &["wslrelay", "com.docker.backend", "vpnkit", "docker-proxy"];
 
-    let name = strip_windows_exe_suffix(process_name);
+    let name = crate::types::strip_windows_exe_suffix(process_name);
     DOCKER_PROXY_PROCESSES
         .iter()
         .any(|candidate| name.eq_ignore_ascii_case(candidate))
-}
-
-fn strip_windows_exe_suffix(process_name: &str) -> &str {
-    let Some(prefix_len) = process_name.len().checked_sub(4) else {
-        return process_name;
-    };
-
-    match process_name.get(prefix_len..) {
-        Some(suffix) if suffix.eq_ignore_ascii_case(".exe") => {
-            process_name.get(..prefix_len).unwrap_or(process_name)
-        }
-        _ => process_name,
-    }
 }
 
 /// Score an entry by how much enrichment data it carries.

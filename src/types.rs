@@ -139,6 +139,25 @@ pub fn format_uptime(secs: Option<u64>) -> String {
     }
 }
 
+/// Strip a trailing `.exe` suffix from a process name (case-insensitive).
+///
+/// Returns the original string unchanged when the suffix is absent.
+/// Used by both the collector and framework modules to normalize
+/// Windows process names before matching known process patterns.
+#[must_use]
+pub fn strip_windows_exe_suffix(process_name: &str) -> &str {
+    let Some(prefix_len) = process_name.len().checked_sub(4) else {
+        return process_name;
+    };
+
+    match process_name.get(prefix_len..) {
+        Some(suffix) if suffix.eq_ignore_ascii_case(".exe") => {
+            process_name.get(..prefix_len).unwrap_or(process_name)
+        }
+        _ => process_name,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

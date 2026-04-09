@@ -232,24 +232,11 @@ const PROCESS_MAP: &[(&str, &str)] = &[
 /// Detect app label from a process executable name.
 #[must_use]
 pub fn detect_from_process(process_name: &str) -> Option<&'static str> {
-    let name = strip_windows_exe_suffix(process_name);
+    let name = crate::types::strip_windows_exe_suffix(process_name);
     PROCESS_MAP
         .iter()
         .find(|(key, _)| name.eq_ignore_ascii_case(key))
         .map(|(_, label)| *label)
-}
-
-fn strip_windows_exe_suffix(process_name: &str) -> &str {
-    let Some(prefix_len) = process_name.len().checked_sub(4) else {
-        return process_name;
-    };
-
-    match process_name.get(prefix_len..) {
-        Some(suffix) if suffix.eq_ignore_ascii_case(".exe") => {
-            process_name.get(..prefix_len).unwrap_or(process_name)
-        }
-        _ => process_name,
-    }
 }
 
 /// Detect the app label for a port entry using all available information.
