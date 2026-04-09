@@ -99,8 +99,8 @@ pub struct PortEntry {
     pub user: String,
     /// Project folder name or Docker container name.
     pub project: Option<String>,
-    /// Detected app/framework label (e.g. "Next.js", "`PostgreSQL`").
-    pub app: Option<String>,
+    /// Detected app/framework label, for example "Next.js" or `PostgreSQL`.
+    pub app: Option<&'static str>,
     /// Process uptime in seconds.
     pub uptime_secs: Option<u64>,
 }

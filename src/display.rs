@@ -53,7 +53,7 @@ pub fn print_table(entries: &[PortEntry], opts: &DisplayOptions) -> Result<()> {
     for entry in entries {
         let process_display = truncate_process_name(&entry.process);
         let project = entry.project.as_deref().unwrap_or("-");
-        let app = entry.app.as_deref().unwrap_or("-");
+        let app = entry.app.unwrap_or("-");
         let uptime = format_uptime(entry.uptime_secs);
 
         if opts.full {

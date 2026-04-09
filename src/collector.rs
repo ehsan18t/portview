@@ -5,7 +5,8 @@
 //! Docker container info, project root detection, and app/framework labels.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
@@ -49,11 +50,24 @@ pub fn collect() -> Result<Vec<PortEntry>> {
         .map_err(|e| anyhow::anyhow!("failed to enumerate open sockets from the OS: {e}"))?;
 
     let mut sys = System::new();
+    let tracked_pids: Vec<_> = raw_listeners
+        .iter()
+        .map(|listener| sysinfo::Pid::from_u32(listener.process.pid))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+
     // `false` = do not remove previously-tracked dead processes. On a
     // freshly created System the internal map is empty, so this flag
     // has no effect either way. Passing `false` avoids the slightly
     // more expensive "clean up stale entries" pass.
-    sys.refresh_processes_specifics(ProcessesToUpdate::All, false, process_refresh_kind());
+    if !tracked_pids.is_empty() {
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&tracked_pids),
+            false,
+            process_refresh_kind(),
+        );
+    }
 
     let users = Users::new_with_refreshed_list();
 
@@ -120,8 +134,8 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
     let (project_name, project_root) = container.map_or_else(
         || {
             let cwd = sysinfo_process.and_then(sysinfo::Process::cwd);
-            let cmd = extract_cmd(sysinfo_process);
-            let root = lookup_project_root(cwd, &cmd, context.project_cache, context.home);
+            let cmd = sysinfo_process.map_or(&[][..], sysinfo::Process::cmd);
+            let root = lookup_project_root(cwd, cmd, context.project_cache, context.home);
             let name = root
                 .as_ref()
                 .and_then(|r| r.file_name())
@@ -248,10 +262,11 @@ fn parse_linux_tcp6_table_entry(line: &str) -> Option<(SocketAddr, State)> {
         return None;
     }
 
-    let bytes = (0..ip_hex.len())
-        .step_by(2)
-        .map(|index| u8::from_str_radix(&ip_hex[index..index + 2], 16).ok())
-        .collect::<Option<Vec<u8>>>()?;
+    let mut bytes = [0_u8; 16];
+    for (index, slot) in bytes.iter_mut().enumerate() {
+        let offset = index * 2;
+        *slot = u8::from_str_radix(&ip_hex[offset..offset + 2], 16).ok()?;
+    }
 
     let ip_a = read_endian(bytes[0..4].try_into().ok()?);
     let ip_b = read_endian(bytes[4..8].try_into().ok()?);
@@ -494,8 +509,8 @@ const fn state_from_windows_code(code: u32) -> State {
 /// Look up the project root for a process, using a cache to skip repeated
 /// directory walks for processes that share the same working directory.
 ///
-/// Falls back to [`project::detect_project_root`] for command-line
-/// argument parsing when cwd-based detection fails.
+/// Falls back to the first absolute path found in the command-line
+/// arguments when cwd-based detection fails.
 ///
 /// Accepts `Option<&Path>` to avoid allocating a `PathBuf` for every
 /// process on the cache-hit path. A `PathBuf` is only allocated on a
@@ -505,42 +520,32 @@ const fn state_from_windows_code(code: u32) -> State {
 /// [`collect`] and passed down to avoid repeated env-var reads.
 fn lookup_project_root(
     cwd: Option<&Path>,
-    cmd: &[String],
+    cmd: &[OsString],
     cache: &mut HashMap<PathBuf, Option<PathBuf>>,
     home: Option<&Path>,
 ) -> Option<PathBuf> {
-    if let Some(cwd_path) = cwd {
-        if let Some(cached) = cache.get(cwd_path) {
-            if cached.is_some() {
-                return cached.clone();
-            }
-            // Cached None: cwd walk found nothing; fall through to cmd-args.
-        } else {
-            let result = project::find_from_dir(cwd_path, home);
-            cache.insert(cwd_path.to_path_buf(), result.clone());
-            if result.is_some() {
-                return result;
-            }
-        }
+    if let Some(cwd_path) = cwd
+        && let Some(root) = lookup_cached_project_root(cwd_path, cache, home)
+    {
+        return Some(root);
     }
 
-    // Delegate the cmd-args fallback to the project module so the
-    // logic is not duplicated in two places.
-    project::detect_project_root(None, cmd, home)
+    project::first_absolute_cmd_parent(cmd)
+        .and_then(|cmd_path| lookup_cached_project_root(cmd_path, cache, home))
 }
 
-/// Extract command-line arguments from a sysinfo process handle.
-///
-/// Returns an empty `Vec` when the process is `None` or has no args.
-fn extract_cmd(process: Option<&sysinfo::Process>) -> Vec<String> {
-    process
-        .map(|p| {
-            p.cmd()
-                .iter()
-                .map(|s| s.to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default()
+fn lookup_cached_project_root(
+    start: &Path,
+    cache: &mut HashMap<PathBuf, Option<PathBuf>>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(cached) = cache.get(start) {
+        return cached.clone();
+    }
+
+    let result = project::find_from_dir(start, home);
+    cache.insert(start.to_path_buf(), result.clone());
+    result
 }
 
 /// Deduplicate entries that share the same user-visible logical socket.
@@ -758,7 +763,7 @@ mod tests {
         enriched.pid = 1002;
         enriched.process = "com.docker.backend.exe".to_string();
         enriched.project = Some("my-postgres".to_string());
-        enriched.app = Some("PostgreSQL".to_string());
+        enriched.app = Some("PostgreSQL");
         enriched.uptime_secs = Some(3600);
 
         let result = deduplicate(vec![bare, enriched]);
@@ -776,12 +781,12 @@ mod tests {
         let mut first = make_entry(8080, Protocol::Tcp);
         first.pid = 1001;
         first.process = "nginx".to_string();
-        first.app = Some("Nginx".to_string());
+        first.app = Some("Nginx");
 
         let mut second = make_entry(8080, Protocol::Tcp);
         second.pid = 1002;
         second.process = "nginx".to_string();
-        second.app = Some("Nginx".to_string());
+        second.app = Some("Nginx");
 
         let result = deduplicate(vec![first, second]);
         assert_eq!(
@@ -797,12 +802,12 @@ mod tests {
         proxy.pid = 1001;
         proxy.process = "wslrelay.exe".to_string();
         proxy.project = Some("my-postgres".to_string());
-        proxy.app = Some("PostgreSQL".to_string());
+        proxy.app = Some("PostgreSQL");
 
         let mut real = make_entry(5432, Protocol::Tcp);
         real.pid = 1002;
         real.process = "postgres".to_string();
-        real.app = Some("PostgreSQL".to_string());
+        real.app = Some("PostgreSQL");
 
         let result = deduplicate(vec![proxy, real]);
         assert_eq!(
@@ -823,7 +828,7 @@ mod tests {
     fn enrichment_score_fully_enriched() {
         let mut entry = make_entry(80, Protocol::Tcp);
         entry.project = Some("proj".to_string());
-        entry.app = Some("App".to_string());
+        entry.app = Some("App");
         entry.uptime_secs = Some(100);
         entry.user = "admin".to_string();
         assert_eq!(enrichment_score(&entry), 6, "fully enriched should score 6");

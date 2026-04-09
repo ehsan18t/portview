@@ -250,20 +250,20 @@ pub fn detect(
     container: Option<&ContainerInfo>,
     project_root: Option<&Path>,
     process_name: &str,
-) -> Option<String> {
+) -> Option<&'static str> {
     if let Some(info) = container
         && let Some(label) = detect_from_image(info)
     {
-        return Some(label.to_string());
+        return Some(label);
     }
 
     if let Some(root) = project_root
         && let Some(label) = detect_from_config(root)
     {
-        return Some(label.to_string());
+        return Some(label);
     }
 
-    detect_from_process(process_name).map(ToString::to_string)
+    detect_from_process(process_name)
 }
 
 #[cfg(test)]
@@ -447,7 +447,7 @@ mod tests {
             image: "postgres:16".to_string(),
         };
         let result = detect(Some(&info), Some(dir.path()), "node");
-        assert_eq!(result.as_deref(), Some("PostgreSQL"));
+        assert_eq!(result, Some("PostgreSQL"));
     }
 
     #[test]
@@ -455,13 +455,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("next.config.js"), "").unwrap();
         let result = detect(None, Some(dir.path()), "node");
-        assert_eq!(result.as_deref(), Some("Next.js"));
+        assert_eq!(result, Some("Next.js"));
     }
 
     #[test]
     fn combined_falls_through_to_process() {
         let result = detect(None, None, "postgres");
-        assert_eq!(result.as_deref(), Some("PostgreSQL"));
+        assert_eq!(result, Some("PostgreSQL"));
     }
 
     #[test]

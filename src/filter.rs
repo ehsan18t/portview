@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn relevance_filter_keeps_entry_with_app() {
         let mut entry = make_entry(5432, Protocol::Tcp, State::Listen);
-        entry.app = Some("PostgreSQL".to_string());
+        entry.app = Some("PostgreSQL");
         let result = apply(vec![entry], &default_filter());
         assert_eq!(result.len(), 1, "entry with app label should pass");
     }

@@ -7,6 +7,7 @@
 //! stray marker files (e.g. an accidental `package.json` in `~`), and
 //! is capped at `MAX_WALK_DEPTH` levels as a safety net.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// Files whose presence indicates a project root directory.
@@ -48,7 +49,7 @@ const MAX_WALK_DEPTH: usize = 16;
 /// root can be determined.
 pub fn detect_project_root(
     cwd: Option<&Path>,
-    cmd: &[impl AsRef<str>],
+    cmd: &[impl AsRef<OsStr>],
     home: Option<&Path>,
 ) -> Option<PathBuf> {
     if let Some(cwd) = cwd
@@ -57,18 +58,22 @@ pub fn detect_project_root(
         return Some(root);
     }
 
-    // Fallback: look for absolute paths in command-line arguments
-    for arg in cmd {
-        let path = Path::new(arg.as_ref());
-        if path.is_absolute()
-            && let Some(parent) = path.parent()
-            && let Some(root) = find_from_dir(parent, home)
-        {
-            return Some(root);
-        }
+    if let Some(parent) = first_absolute_cmd_parent(cmd)
+        && let Some(root) = find_from_dir(parent, home)
+    {
+        return Some(root);
     }
 
     None
+}
+
+/// Return the parent directory of the first absolute path found in `cmd`.
+#[must_use]
+pub(crate) fn first_absolute_cmd_parent<S: AsRef<OsStr>>(cmd: &[S]) -> Option<&Path> {
+    cmd.iter().find_map(|arg| {
+        let path = Path::new(arg.as_ref());
+        path.is_absolute().then(|| path.parent()).flatten()
+    })
 }
 
 /// Walk upward from `start` looking for project marker files.
