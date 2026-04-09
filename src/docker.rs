@@ -33,7 +33,7 @@ const DAEMON_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 /// Detect running Docker/Podman containers and their published ports.
 ///
 /// Returns an empty map if the Docker/Podman daemon is unavailable or
-/// does not respond within [`DAEMON_TIMEOUT`].
+/// does not respond within `DAEMON_TIMEOUT` (3 seconds).
 /// Never returns an error - this is best-effort enrichment.
 #[must_use]
 pub fn detect_containers() -> ContainerPortMap {
