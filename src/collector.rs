@@ -614,11 +614,19 @@ fn deduplicate_group(entries: Vec<PortEntry>) -> Vec<PortEntry> {
         .into_iter()
         .partition(|entry| is_docker_proxy_process(&entry.process));
 
+    if !proxy_entries.iter().any(has_docker_enrichment) {
+        return proxy_entries.into_iter().chain(real_entries).collect();
+    }
+
     if real_entries.is_empty() {
         return best_entry(proxy_entries).into_iter().collect();
     }
 
     real_entries
+}
+
+const fn has_docker_enrichment(entry: &PortEntry) -> bool {
+    entry.project.is_some() || entry.app.is_some()
 }
 
 /// Deduplicate repeated rows from the same process while preserving distinct PIDs.
@@ -862,6 +870,24 @@ mod tests {
             "docker proxy rows should yield to real processes"
         );
         assert_eq!(result[0].process, "postgres");
+    }
+
+    #[test]
+    fn dedup_keeps_proxy_named_process_without_docker_enrichment() {
+        let mut proxy_named = make_entry(8080, Protocol::Tcp);
+        proxy_named.pid = 1001;
+        proxy_named.process = "docker-proxy.exe".to_string();
+
+        let mut real = make_entry(8080, Protocol::Tcp);
+        real.pid = 1002;
+        real.process = "my-app".to_string();
+
+        let result = deduplicate(vec![proxy_named, real]);
+        assert_eq!(
+            result.len(),
+            2,
+            "proxy-name pruning should only happen for Docker-enriched groups"
+        );
     }
 
     #[test]
