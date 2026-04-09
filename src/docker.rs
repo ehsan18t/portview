@@ -7,10 +7,13 @@
 //! with zero additional dependencies.
 
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
 #[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(windows)]
+use std::{ffi::OsStr, ffi::c_void, os::windows::ffi::OsStrExt, os::windows::io::AsRawHandle};
 
 use serde::Deserialize;
 
@@ -56,6 +59,32 @@ pub type ContainerPortMap = HashMap<(Option<IpAddr>, u16, Protocol), ContainerIn
 /// named pipe has no built-in timeout support. A thread-level timeout
 /// covers both platforms uniformly.
 const DAEMON_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[cfg(windows)]
+type RawHandle = *mut c_void;
+
+#[cfg(windows)]
+const ERROR_BROKEN_PIPE: i32 = 109;
+
+#[cfg(windows)]
+const ERROR_PIPE_BUSY: i32 = 231;
+
+#[cfg(windows)]
+const PIPE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn WaitNamedPipeW(name: *const u16, timeout: u32) -> i32;
+    fn PeekNamedPipe(
+        named_pipe: RawHandle,
+        buffer: *mut c_void,
+        buffer_size: u32,
+        bytes_read: *mut u32,
+        total_bytes_avail: *mut u32,
+        bytes_left_this_message: *mut u32,
+    ) -> i32;
+}
 
 /// Handle for an in-progress Docker/Podman container detection.
 ///
@@ -167,6 +196,7 @@ fn short_container_id(id: &str) -> String {
     id.chars().take(12).collect()
 }
 
+#[cfg(unix)]
 fn fetch_first_success<P, I, F>(candidates: I, fetch: F) -> Option<String>
 where
     P: Send + 'static,
@@ -210,21 +240,38 @@ fn fetch_containers_json() -> Option<String> {
 
 #[cfg(windows)]
 fn fetch_containers_json() -> Option<String> {
-    use std::fs::OpenOptions;
+    let deadline = std::time::Instant::now() + DAEMON_TIMEOUT;
 
     let pipe_paths = [
         r"\\.\pipe\docker_engine",
         r"\\.\pipe\podman-machine-default",
     ];
 
-    // NOTE: Named pipe opens can block on a hung daemon, so probe all known
-    // endpoints concurrently and return the first successful response. Any
-    // worker thread stuck in `open` is abandoned when the short-lived CLI
-    // process exits.
-    fetch_first_success(pipe_paths, |path| {
-        let mut stream = OpenOptions::new().read(true).write(true).open(path).ok()?;
-        send_http_request(&mut stream)
-    })
+    for path in pipe_paths {
+        if let Some(body) = fetch_named_pipe_json(path, deadline) {
+            return Some(body);
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
+fn fetch_named_pipe_json(path: &str, deadline: std::time::Instant) -> Option<String> {
+    use std::fs::OpenOptions;
+
+    loop {
+        let mut stream = match OpenOptions::new().read(true).write(true).open(path) {
+            Ok(stream) => stream,
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                wait_named_pipe(path, deadline)?;
+                continue;
+            }
+            Err(_) => return None,
+        };
+
+        return send_http_request_windows(&mut stream, deadline);
+    }
 }
 
 #[cfg(unix)]
@@ -248,6 +295,7 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
+#[cfg(unix)]
 fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Option<String> {
     use std::io::Read as _;
 
@@ -285,6 +333,125 @@ fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Opti
     let mut body = String::new();
     reader.read_to_string(&mut body).ok()?;
     Some(body)
+}
+
+#[cfg(windows)]
+fn send_http_request_windows(
+    stream: &mut std::fs::File,
+    deadline: std::time::Instant,
+) -> Option<String> {
+    use std::io::{Read as _, Write as _};
+
+    stream
+        .write_all(b"GET /containers/json HTTP/1.0\r\nHost: localhost\r\n\r\n")
+        .ok()?;
+
+    let mut response = Vec::new();
+    let mut chunk = [0_u8; 8192];
+
+    loop {
+        if let Some(body) = try_extract_http_body(&response, false) {
+            return Some(body);
+        }
+
+        let available = match peek_available_bytes(stream) {
+            Some(available) => available,
+            None if last_os_error_is(ERROR_BROKEN_PIPE) => {
+                return try_extract_http_body(&response, true);
+            }
+            None => return None,
+        };
+
+        if available == 0 {
+            if std::time::Instant::now() >= deadline {
+                return try_extract_http_body(&response, true);
+            }
+            std::thread::sleep(PIPE_POLL_INTERVAL);
+            continue;
+        }
+
+        let max_chunk = u32::try_from(chunk.len()).ok()?;
+        let read_len = usize::try_from(available.min(max_chunk)).ok()?;
+        match stream.read(&mut chunk[..read_len]) {
+            Ok(0) => return try_extract_http_body(&response, true),
+            Ok(read) => response.extend_from_slice(&chunk[..read]),
+            Err(error) if error.raw_os_error() == Some(ERROR_BROKEN_PIPE) => {
+                return try_extract_http_body(&response, true);
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+fn try_extract_http_body(response: &[u8], eof: bool) -> Option<String> {
+    let text = std::str::from_utf8(response).ok()?;
+    let headers_end = text.find("\r\n\r\n")?;
+
+    let mut header_lines = text[..headers_end].split("\r\n");
+    let status_line = header_lines.next()?;
+    let status_code: u16 = status_line.split_whitespace().nth(1)?.parse().ok()?;
+    if !(200..300).contains(&status_code) {
+        return None;
+    }
+
+    let body = &text[headers_end + 4..];
+    if let Some(content_length) = parse_content_length(header_lines) {
+        return (body.len() >= content_length).then(|| body[..content_length].to_string());
+    }
+
+    eof.then(|| body.to_string())
+}
+
+fn parse_content_length<'a>(mut header_lines: impl Iterator<Item = &'a str>) -> Option<usize> {
+    header_lines.find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("Content-Length")
+            .then(|| value.trim().parse().ok())
+            .flatten()
+    })
+}
+
+#[cfg(windows)]
+fn wait_named_pipe(path: &str, deadline: std::time::Instant) -> Option<()> {
+    let timeout_ms = remaining_timeout_ms(deadline)?;
+    let wide_path = wide_string(path);
+    let success = unsafe { WaitNamedPipeW(wide_path.as_ptr(), timeout_ms) };
+    (success != 0).then_some(())
+}
+
+#[cfg(windows)]
+fn peek_available_bytes(stream: &std::fs::File) -> Option<u32> {
+    let mut available = 0;
+    let success = unsafe {
+        PeekNamedPipe(
+            stream.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &raw mut available,
+            std::ptr::null_mut(),
+        )
+    };
+    (success != 0).then_some(available)
+}
+
+#[cfg(windows)]
+fn remaining_timeout_ms(deadline: std::time::Instant) -> Option<u32> {
+    let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
+    u32::try_from(remaining.as_millis().min(u128::from(u32::MAX))).ok()
+}
+
+#[cfg(windows)]
+fn wide_string(value: &str) -> Vec<u16> {
+    OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[cfg(windows)]
+fn last_os_error_is(expected: i32) -> bool {
+    std::io::Error::last_os_error().raw_os_error() == Some(expected)
 }
 
 #[cfg(test)]
@@ -438,6 +605,24 @@ mod tests {
         let map = parse_containers_json(json);
 
         assert!(map.contains_key(&(Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp,)));
+    }
+
+    #[test]
+    fn http_body_parser_waits_for_complete_content_length() {
+        let partial = b"HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\n123";
+        assert!(try_extract_http_body(partial, false).is_none());
+
+        let complete = b"HTTP/1.0 200 OK\r\nContent-Length: 5\r\n\r\n12345";
+        assert_eq!(
+            try_extract_http_body(complete, false).as_deref(),
+            Some("12345")
+        );
+    }
+
+    #[test]
+    fn http_body_parser_accepts_eof_without_content_length() {
+        let response = b"HTTP/1.0 200 OK\r\nServer: docker\r\n\r\n[]";
+        assert_eq!(try_extract_http_body(response, true).as_deref(), Some("[]"));
     }
 
     #[cfg(unix)]
