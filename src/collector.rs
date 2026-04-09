@@ -129,17 +129,22 @@ fn build_entry(
 /// `com.docker.backend.exe` on both IPv4 and IPv6). This keeps only the
 /// entry with the richest enrichment data per port+protocol pair.
 fn deduplicate(entries: Vec<PortEntry>) -> Vec<PortEntry> {
+    use std::collections::hash_map::Entry;
+
     let mut best: HashMap<(u16, Protocol), PortEntry> = HashMap::new();
 
     for entry in entries {
         let key = (entry.port, entry.proto);
-        best.entry(key)
-            .and_modify(|existing| {
-                if enrichment_score(&entry) > enrichment_score(existing) {
-                    *existing = entry.clone();
+        match best.entry(key) {
+            Entry::Occupied(mut slot) => {
+                if enrichment_score(&entry) > enrichment_score(slot.get()) {
+                    slot.insert(entry);
                 }
-            })
-            .or_insert(entry);
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(entry);
+            }
+        }
     }
 
     best.into_values().collect()
