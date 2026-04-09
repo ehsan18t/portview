@@ -55,6 +55,14 @@ struct CollectContext<'a> {
 /// Repeated rows from the same PID are collapsed. Known Docker proxy
 /// duplicates (for example Docker Desktop binding both IPv4 and IPv6)
 /// are collapsed as well, but distinct non-proxy PIDs remain visible.
+///
+/// # Thread safety
+///
+/// Docker daemon probing spawns background threads that are not joined
+/// on return. This is safe for short-lived CLI processes but means this
+/// function is **not suitable for long-running daemons**: if the Docker
+/// socket blocks, the probe thread will leak. Callers embedding this in
+/// a persistent service should add their own timeout wrapper.
 pub fn collect() -> Result<Vec<PortEntry>> {
     // Start Docker/Podman detection early so it runs concurrently with
     // the OS-level socket enumeration and process metadata refresh.
