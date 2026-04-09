@@ -630,7 +630,7 @@ fn deduplicate_by_pid(entries: Vec<PortEntry>) -> Vec<PortEntry> {
     for entry in entries {
         match best_by_pid.entry(entry.pid) {
             Entry::Occupied(mut slot) => {
-                if compare_entry_preference(&entry, slot.get()).is_gt() {
+                if compare_entry_enrichment(&entry, slot.get()).is_gt() {
                     slot.insert(entry);
                 }
             }
@@ -647,9 +647,12 @@ fn best_entry(entries: Vec<PortEntry>) -> Option<PortEntry> {
     entries.into_iter().max_by(compare_entry_preference)
 }
 
+fn compare_entry_enrichment(left: &PortEntry, right: &PortEntry) -> Ordering {
+    enrichment_score(left).cmp(&enrichment_score(right))
+}
+
 fn compare_entry_preference(left: &PortEntry, right: &PortEntry) -> Ordering {
-    enrichment_score(left)
-        .cmp(&enrichment_score(right))
+    compare_entry_enrichment(left, right)
         .then_with(|| right.pid.cmp(&left.pid))
         .then_with(|| right.process.as_str().cmp(left.process.as_str()))
 }
@@ -658,11 +661,20 @@ fn is_docker_proxy_process(process_name: &str) -> bool {
     const DOCKER_PROXY_PROCESSES: &[&str] =
         &["wslrelay", "com.docker.backend", "vpnkit", "docker-proxy"];
 
-    let normalized = process_name.to_ascii_lowercase();
-    let name = normalized
-        .strip_suffix(".exe")
-        .unwrap_or(normalized.as_str());
-    DOCKER_PROXY_PROCESSES.contains(&name)
+    let name = strip_windows_exe_suffix(process_name);
+    DOCKER_PROXY_PROCESSES
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
+fn strip_windows_exe_suffix(process_name: &str) -> &str {
+    if process_name.len() >= 4
+        && process_name[process_name.len() - 4..].eq_ignore_ascii_case(".exe")
+    {
+        &process_name[..process_name.len() - 4]
+    } else {
+        process_name
+    }
 }
 
 /// Score an entry by how much enrichment data it carries.
