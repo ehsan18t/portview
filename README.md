@@ -153,7 +153,7 @@ Additional columns with `--full`:
 2. Config files in the project root (e.g. `next.config.mjs` -> Next.js)
 3. Process executable name (e.g. `nginx` -> Nginx)
 
-**Docker/Podman support:** Automatically detects running containers and maps their published ports to container names and images. Works via Docker socket (Linux) or named pipe (Windows). Podman is supported via its compatible REST API.
+**Docker/Podman support:** Automatically detects running containers and maps their published ports to container names and images. Works via Docker socket (Linux, including common rootless socket paths) or named pipe (Windows). Podman is supported via its compatible REST API.
 
 **Duplicate suppression:** Repeated rows from the same PID are collapsed, and known Docker proxy duplicates are collapsed into one row. Distinct worker PIDs on the same port stay visible.
 

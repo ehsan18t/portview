@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use serde::Deserialize;
 
@@ -23,6 +25,8 @@ struct DockerPort<'a> {
 
 #[derive(Deserialize)]
 struct DockerContainer<'a> {
+    #[serde(rename = "Id")]
+    id: Option<&'a str>,
     #[serde(rename = "Names")]
     names: Option<Vec<&'a str>>,
     #[serde(rename = "Image")]
@@ -105,15 +109,9 @@ pub fn parse_containers_json(json_body: &str) -> ContainerPortMap {
     };
 
     for container in containers {
-        let Some(name) = container.names.and_then(|names| names.into_iter().next()) else {
-            continue;
-        };
-        let name = name.trim_start_matches('/').to_string();
+        let name = container_display_name(&container);
         let image = container.image.unwrap_or("").to_string();
-
-        if name.is_empty() {
-            continue;
-        }
+        let info = ContainerInfo { name, image };
 
         let Some(ports) = container.ports else {
             continue;
@@ -128,41 +126,83 @@ pub fn parse_containers_json(json_body: &str) -> ContainerPortMap {
                 _ => Protocol::Tcp,
             };
 
-            map.insert(
-                (public_port, proto),
-                ContainerInfo {
-                    name: name.clone(),
-                    image: image.clone(),
-                },
-            );
+            map.insert((public_port, proto), info.clone());
         }
     }
 
     map
 }
 
+fn container_display_name(container: &DockerContainer<'_>) -> String {
+    container
+        .names
+        .as_ref()
+        .and_then(|names| names.iter().copied().find_map(normalize_container_name))
+        .or_else(|| {
+            container
+                .image
+                .map(str::trim)
+                .filter(|image| !image.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            container
+                .id
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(short_container_id)
+        })
+        .unwrap_or_else(|| "container".to_string())
+}
+
+fn normalize_container_name(name: &str) -> Option<String> {
+    let normalized = name.trim().trim_start_matches('/');
+    (!normalized.is_empty()).then(|| normalized.to_string())
+}
+
+fn short_container_id(id: &str) -> String {
+    id.chars().take(12).collect()
+}
+
+fn fetch_first_success<P, I, F>(candidates: I, fetch: F) -> Option<String>
+where
+    P: Send + 'static,
+    I: IntoIterator<Item = P>,
+    F: Fn(P) -> Option<String> + Send + Sync + 'static,
+{
+    let mut has_candidates = false;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let fetch = std::sync::Arc::new(fetch);
+
+    for candidate in candidates {
+        has_candidates = true;
+        let tx = tx.clone();
+        let fetch = std::sync::Arc::clone(&fetch);
+        std::thread::spawn(move || {
+            if let Some(body) = fetch(candidate) {
+                drop(tx.send(body));
+            }
+        });
+    }
+
+    drop(tx);
+    has_candidates.then_some(())?;
+    rx.recv_timeout(DAEMON_TIMEOUT).ok()
+}
+
 #[cfg(unix)]
 fn fetch_containers_json() -> Option<String> {
     use std::os::unix::net::UnixStream;
-    use std::time::Duration;
 
     // Safety: getuid() is a simple syscall with no preconditions.
     let uid = unsafe { libc::getuid() };
 
-    let socket_paths = [
-        "/var/run/docker.sock".to_string(),
-        format!("/run/user/{uid}/podman/podman.sock"),
-        "/run/podman/podman.sock".to_string(),
-    ];
-
-    for path in &socket_paths {
-        if let Ok(mut stream) = UnixStream::connect(path) {
-            // Best-effort timeout; proceed even if it cannot be set.
-            drop(stream.set_read_timeout(Some(Duration::from_secs(3))));
-            return send_http_request(&mut stream);
-        }
-    }
-    None
+    fetch_first_success(unix_socket_paths(uid, home_dir()), |path| {
+        let mut stream = UnixStream::connect(path).ok()?;
+        // Best-effort timeout; proceed even if it cannot be set.
+        drop(stream.set_read_timeout(Some(DAEMON_TIMEOUT)));
+        send_http_request(&mut stream)
+    })
 }
 
 #[cfg(windows)]
@@ -174,18 +214,35 @@ fn fetch_containers_json() -> Option<String> {
         r"\\.\pipe\podman-machine-default",
     ];
 
-    // NOTE: Windows named pipes opened via std::fs do not support read
-    // timeouts. If the daemon is hung, `send_http_request` will block
-    // indefinitely in the background thread. The main thread is
-    // protected by `DAEMON_TIMEOUT` via `recv_timeout`, and the OS
-    // terminates all threads when the CLI process exits, so this is
-    // acceptable for a short-lived CLI tool.
-    for path in &pipe_paths {
-        if let Ok(mut stream) = OpenOptions::new().read(true).write(true).open(path) {
-            return send_http_request(&mut stream);
-        }
+    // NOTE: Named pipe opens can block on a hung daemon, so probe all known
+    // endpoints concurrently and return the first successful response. Any
+    // worker thread stuck in `open` is abandoned when the short-lived CLI
+    // process exits.
+    fetch_first_success(pipe_paths, |path| {
+        let mut stream = OpenOptions::new().read(true).write(true).open(path).ok()?;
+        send_http_request(&mut stream)
+    })
+}
+
+#[cfg(unix)]
+fn unix_socket_paths(uid: u32, home: Option<PathBuf>) -> Vec<String> {
+    let mut socket_paths = vec![
+        "/var/run/docker.sock".to_string(),
+        format!("/run/user/{uid}/docker.sock"),
+        format!("/run/user/{uid}/podman/podman.sock"),
+        "/run/podman/podman.sock".to_string(),
+    ];
+
+    if let Some(home) = home {
+        socket_paths.push(home.join(".docker/run/docker.sock").display().to_string());
     }
-    None
+
+    socket_paths
+}
+
+#[cfg(unix)]
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Option<String> {
@@ -345,9 +402,38 @@ mod tests {
             "Ports": [{"PrivatePort": 80, "PublicPort": 80, "Type": "tcp"}]
         }]"#;
         let map = parse_containers_json(json);
+        let info = map.get(&(80, Protocol::Tcp)).unwrap();
+        assert_eq!(
+            info.name, "app:latest",
+            "containers without names should fall back to their image"
+        );
+    }
+
+    #[test]
+    fn parse_container_without_name_or_image_uses_short_id() {
+        let json = r#"[{
+            "Id": "0123456789abcdef0123456789abcdef",
+            "Names": ["/"],
+            "Ports": [{"PrivatePort": 80, "PublicPort": 80, "Type": "tcp"}]
+        }]"#;
+        let map = parse_containers_json(json);
+        let info = map.get(&(80, Protocol::Tcp)).unwrap();
+        assert_eq!(
+            info.name, "0123456789ab",
+            "containers without names or images should fall back to a short id"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_socket_paths_include_rootless_docker_locations() {
+        let home = PathBuf::from("/home/tester");
+        let paths = unix_socket_paths(1000, Some(home));
+
+        assert!(paths.contains(&"/run/user/1000/docker.sock".to_string()));
         assert!(
-            map.is_empty(),
-            "container with empty Names should be skipped"
+            paths.contains(&"/home/tester/.docker/run/docker.sock".to_string()),
+            "rootless home socket should be probed"
         );
     }
 }
