@@ -7,6 +7,12 @@ use std::path::Path;
 
 use crate::docker::ContainerInfo;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConfigMatchKind {
+    Exact,
+    Prefix,
+}
+
 /// Detect app label from a Docker container's image name.
 ///
 /// Matches the base image name (before the colon tag) against known patterns.
@@ -54,29 +60,33 @@ pub fn detect_from_image(info: &ContainerInfo) -> Option<&'static str> {
 
 /// Config file patterns checked inside a project root directory.
 /// More specific patterns (e.g. `next.config`) come before generic ones.
-const CONFIG_PATTERNS: &[(&str, &str)] = &[
-    ("next.config", "Next.js"),
-    ("nuxt.config", "Nuxt"),
-    ("angular.json", "Angular"),
-    ("svelte.config", "SvelteKit"),
-    ("astro.config", "Astro"),
-    ("vite.config", "Vite"),
-    ("remix.config", "Remix"),
-    ("gatsby-config", "Gatsby"),
-    ("vue.config", "Vue CLI"),
-    ("webpack.config", "Webpack"),
-    ("manage.py", "Django"),
-    ("app.py", "Flask"),
-    ("wsgi.py", "Flask"),
-    ("Cargo.toml", "Rust"),
-    ("go.mod", "Go"),
-    ("pom.xml", "Java (Maven)"),
-    ("build.gradle.kts", "Kotlin (Gradle)"),
-    ("build.gradle", "Java (Gradle)"),
-    ("composer.json", "PHP"),
-    ("mix.exs", "Elixir"),
-    ("deno.json", "Deno"),
-    ("pyproject.toml", "Python"),
+const CONFIG_PATTERNS: &[(&str, &str, ConfigMatchKind)] = &[
+    ("next.config", "Next.js", ConfigMatchKind::Prefix),
+    ("nuxt.config", "Nuxt", ConfigMatchKind::Prefix),
+    ("angular.json", "Angular", ConfigMatchKind::Exact),
+    ("svelte.config", "SvelteKit", ConfigMatchKind::Prefix),
+    ("astro.config", "Astro", ConfigMatchKind::Prefix),
+    ("vite.config", "Vite", ConfigMatchKind::Prefix),
+    ("remix.config", "Remix", ConfigMatchKind::Prefix),
+    ("gatsby-config", "Gatsby", ConfigMatchKind::Prefix),
+    ("vue.config", "Vue CLI", ConfigMatchKind::Prefix),
+    ("webpack.config", "Webpack", ConfigMatchKind::Prefix),
+    ("manage.py", "Django", ConfigMatchKind::Exact),
+    ("app.py", "Flask", ConfigMatchKind::Exact),
+    ("wsgi.py", "Flask", ConfigMatchKind::Exact),
+    ("Cargo.toml", "Rust", ConfigMatchKind::Exact),
+    ("go.mod", "Go", ConfigMatchKind::Exact),
+    ("pom.xml", "Java (Maven)", ConfigMatchKind::Exact),
+    (
+        "build.gradle.kts",
+        "Kotlin (Gradle)",
+        ConfigMatchKind::Exact,
+    ),
+    ("build.gradle", "Java (Gradle)", ConfigMatchKind::Exact),
+    ("composer.json", "PHP", ConfigMatchKind::Exact),
+    ("mix.exs", "Elixir", ConfigMatchKind::Exact),
+    ("deno.json", "Deno", ConfigMatchKind::Exact),
+    ("pyproject.toml", "Python", ConfigMatchKind::Exact),
 ];
 
 /// Extension-based config patterns.
@@ -93,7 +103,7 @@ pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
 
     let rack_priority = CONFIG_PATTERNS
         .iter()
-        .position(|&(pattern, _)| pattern == "mix.exs")
+        .position(|&(pattern, _, _)| pattern == "mix.exs")
         .unwrap_or(CONFIG_PATTERNS.len());
 
     // Track best match by its position in CONFIG_PATTERNS (lower = higher
@@ -113,8 +123,13 @@ pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
         has_config_ru |= name == "config.ru";
 
         // Check name-based patterns; keep only if higher priority than current best.
-        for (i, (pattern, label)) in CONFIG_PATTERNS.iter().enumerate() {
-            if name.starts_with(pattern) && best.as_ref().is_none_or(|&(best_i, _)| i < best_i) {
+        for (i, (pattern, label, match_kind)) in CONFIG_PATTERNS.iter().enumerate() {
+            let matches = match match_kind {
+                ConfigMatchKind::Exact => name == *pattern,
+                ConfigMatchKind::Prefix => name.starts_with(pattern),
+            };
+
+            if matches && best.as_ref().is_none_or(|&(best_i, _)| i < best_i) {
                 if i == 0 {
                     return Some(label); // Top priority — cannot be beaten.
                 }
@@ -366,6 +381,20 @@ mod tests {
         fs::write(dir.path().join("Gemfile"), "").unwrap();
         fs::write(dir.path().join("config.ru"), "").unwrap();
         assert_eq!(detect_from_config(dir.path()), Some("Ruby (Rack)"));
+    }
+
+    #[test]
+    fn config_exact_match_does_not_overmatch_backup_file() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("Cargo.toml.bak"), "").unwrap();
+        assert_eq!(detect_from_config(dir.path()), None);
+    }
+
+    #[test]
+    fn config_exact_match_does_not_overmatch_renamed_script() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("manage.py.old"), "").unwrap();
+        assert_eq!(detect_from_config(dir.path()), None);
     }
 
     #[test]
