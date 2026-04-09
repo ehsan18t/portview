@@ -24,6 +24,10 @@ use crate::{framework, project};
 /// Docker Desktop on Windows binding to both IPv4 and IPv6), only the
 /// most enriched entry is kept.
 pub fn collect() -> Result<Vec<PortEntry>> {
+    // Start Docker/Podman detection early so it runs concurrently with
+    // the OS-level socket enumeration and process metadata refresh.
+    let docker_handle = docker::start_detection();
+
     let raw_listeners = listeners::get_all()
         .map_err(|e| anyhow::anyhow!("failed to enumerate open sockets from the OS: {e}"))?;
 
@@ -31,7 +35,9 @@ pub fn collect() -> Result<Vec<PortEntry>> {
     sys.refresh_processes_specifics(ProcessesToUpdate::All, false, process_refresh_kind());
 
     let users = Users::new_with_refreshed_list();
-    let container_map = docker::detect_containers();
+
+    // Block on Docker results only after all other I/O is done.
+    let container_map = docker::await_detection(docker_handle);
 
     let now_epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

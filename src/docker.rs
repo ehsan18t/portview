@@ -30,19 +30,35 @@ pub type ContainerPortMap = HashMap<(u16, Protocol), ContainerInfo>;
 /// covers both platforms uniformly.
 const DAEMON_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Detect running Docker/Podman containers and their published ports.
+/// Handle for an in-progress Docker/Podman container detection.
 ///
-/// Returns an empty map if the Docker/Podman daemon is unavailable or
-/// does not respond within `DAEMON_TIMEOUT` (3 seconds).
-/// Never returns an error - this is best-effort enrichment.
+/// Created by [`start_detection`] and consumed by [`await_detection`].
+pub type DetectionHandle = std::sync::mpsc::Receiver<Option<ContainerPortMap>>;
+
+/// Start asynchronous detection of Docker/Podman containers.
+///
+/// Spawns a background thread to query the Docker/Podman daemon.
+/// The returned handle should be passed to [`await_detection`] to
+/// retrieve the results. This allows other work (socket enumeration,
+/// process metadata refresh) to proceed concurrently.
 #[must_use]
-pub fn detect_containers() -> ContainerPortMap {
+pub fn start_detection() -> DetectionHandle {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         // Ignore send error: receiver may have timed out and been dropped.
         drop(tx.send(query_daemon()));
     });
-    rx.recv_timeout(DAEMON_TIMEOUT)
+    rx
+}
+
+/// Wait for Docker/Podman detection to complete.
+///
+/// Blocks for at most [`DAEMON_TIMEOUT`] (3 seconds) before returning
+/// an empty map. Never returns an error -- this is best-effort enrichment.
+#[must_use]
+pub fn await_detection(handle: DetectionHandle) -> ContainerPortMap {
+    handle
+        .recv_timeout(DAEMON_TIMEOUT)
         .ok()
         .flatten()
         .unwrap_or_default()
