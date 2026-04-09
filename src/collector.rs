@@ -15,8 +15,6 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 #[cfg(unix)]
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-#[cfg(windows)]
-use std::{ffi::c_void, ptr};
 
 #[cfg(target_os = "linux")]
 use std::io::{BufRead, BufReader};
@@ -36,81 +34,6 @@ struct UserResolver {
     names_by_uid: HashMap<libc::uid_t, String>,
     #[cfg(windows)]
     names_by_pid: HashMap<u32, String>,
-}
-
-#[cfg(windows)]
-type RawHandle = *mut c_void;
-
-#[cfg(windows)]
-type RawSid = *mut c_void;
-
-#[cfg(windows)]
-const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-
-#[cfg(windows)]
-const TOKEN_QUERY: u32 = 0x0008;
-
-#[cfg(windows)]
-const TOKEN_USER_CLASS: u32 = 1;
-
-#[cfg(windows)]
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct SidAndAttributes {
-    sid: RawSid,
-    attributes: u32,
-}
-
-#[cfg(windows)]
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct TokenUser {
-    user: SidAndAttributes,
-}
-
-#[cfg(windows)]
-struct OwnedHandle(RawHandle);
-
-#[cfg(windows)]
-impl Drop for OwnedHandle {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = CloseHandle(self.0);
-        }
-    }
-}
-
-#[cfg(windows)]
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> RawHandle;
-    fn CloseHandle(object: RawHandle) -> i32;
-}
-
-#[cfg(windows)]
-#[link(name = "advapi32")]
-unsafe extern "system" {
-    fn OpenProcessToken(
-        process_handle: RawHandle,
-        desired_access: u32,
-        token_handle: *mut RawHandle,
-    ) -> i32;
-    fn GetTokenInformation(
-        token_handle: RawHandle,
-        token_information_class: u32,
-        token_information: *mut c_void,
-        token_information_length: u32,
-        return_length: *mut u32,
-    ) -> i32;
-    fn LookupAccountSidW(
-        system_name: *const u16,
-        sid: RawSid,
-        name: *mut u16,
-        name_len: *mut u32,
-        domain_name: *mut u16,
-        domain_len: *mut u32,
-        sid_name_use: *mut u32,
-    ) -> i32;
 }
 
 struct CollectContext<'a> {
@@ -141,6 +64,7 @@ pub fn collect() -> Result<Vec<PortEntry>> {
         .map_err(|e| anyhow::anyhow!("failed to enumerate open sockets from the OS: {e}"))?;
 
     let mut sys = System::new();
+
     let tracked_pids: Vec<_> = raw_listeners
         .iter()
         .map(|listener| sysinfo::Pid::from_u32(listener.process.pid))
@@ -751,7 +675,42 @@ fn deduplicate(entries: Vec<PortEntry>) -> Vec<PortEntry> {
         deduplicated.extend(deduplicate_group(group));
     }
 
-    deduplicated
+    collapse_docker_proxy_clusters(deduplicated)
+}
+
+fn collapse_docker_proxy_clusters(entries: Vec<PortEntry>) -> Vec<PortEntry> {
+    let mut proxy_clusters: HashMap<ProxyClusterKey, Vec<PortEntry>> = HashMap::new();
+    let mut result = Vec::new();
+
+    for entry in entries {
+        if let Some(key) = docker_proxy_cluster_key(&entry) {
+            proxy_clusters.entry(key).or_default().push(entry);
+        } else {
+            result.push(entry);
+        }
+    }
+
+    for cluster in proxy_clusters.into_values() {
+        if let Some(best) = cluster.into_iter().max_by(compare_proxy_cluster_preference) {
+            result.push(best);
+        }
+    }
+
+    result
+}
+
+type ProxyClusterKey = (u16, Protocol, State, Option<String>, Option<&'static str>);
+
+fn docker_proxy_cluster_key(entry: &PortEntry) -> Option<ProxyClusterKey> {
+    (is_docker_proxy_process(&entry.process) && has_docker_enrichment(entry)).then(|| {
+        (
+            entry.port,
+            entry.proto,
+            entry.state,
+            entry.project.clone(),
+            entry.app,
+        )
+    })
 }
 
 fn deduplicate_group(entries: Vec<PortEntry>) -> Vec<PortEntry> {
@@ -813,6 +772,24 @@ fn compare_entry_preference(left: &PortEntry, right: &PortEntry) -> Ordering {
     compare_entry_enrichment(left, right)
         .then_with(|| right.pid.cmp(&left.pid))
         .then_with(|| right.process.as_str().cmp(left.process.as_str()))
+}
+
+fn compare_proxy_cluster_preference(left: &PortEntry, right: &PortEntry) -> Ordering {
+    compare_entry_enrichment(left, right)
+        .then_with(|| {
+            address_preference(left.local_addr).cmp(&address_preference(right.local_addr))
+        })
+        .then_with(|| compare_entry_preference(left, right))
+}
+
+const fn address_preference(address: IpAddr) -> u8 {
+    match address {
+        IpAddr::V4(ipv4) if ipv4.is_unspecified() => 4,
+        IpAddr::V6(ipv6) if ipv6.is_unspecified() => 3,
+        IpAddr::V4(ipv4) if ipv4.is_loopback() => 2,
+        IpAddr::V6(ipv6) if ipv6.is_loopback() => 1,
+        IpAddr::V4(_) | IpAddr::V6(_) => 5,
+    }
 }
 
 fn is_docker_proxy_process(process_name: &str) -> bool {
@@ -937,7 +914,7 @@ fn lookup_unix_username(uid: libc::uid_t) -> Option<String> {
 
 #[cfg(windows)]
 fn resolve_user(
-    _process: Option<&sysinfo::Process>,
+    process: Option<&sysinfo::Process>,
     pid: u32,
     resolver: &mut UserResolver,
 ) -> String {
@@ -945,109 +922,16 @@ fn resolve_user(
         return cached.clone();
     }
 
-    let name = lookup_windows_username(pid).unwrap_or_else(|| "-".to_string());
+    let name = process
+        .and_then(sysinfo::Process::user_id)
+        .map_or_else(|| "-".to_string(), format_windows_user_id);
     resolver.names_by_pid.insert(pid, name.clone());
     name
 }
 
 #[cfg(windows)]
-fn lookup_windows_username(pid: u32) -> Option<String> {
-    let process = open_process_for_query(pid)?;
-    let token = open_process_token(process.0)?;
-    let token_user = read_token_user(token.0)?;
-    let token_user = unsafe { std::ptr::read_unaligned(token_user.as_ptr().cast::<TokenUser>()) };
-    lookup_account_name(token_user.user.sid)
-}
-
-#[cfg(windows)]
-fn open_process_for_query(pid: u32) -> Option<OwnedHandle> {
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    (!handle.is_null()).then_some(OwnedHandle(handle))
-}
-
-#[cfg(windows)]
-fn open_process_token(process: RawHandle) -> Option<OwnedHandle> {
-    let mut token = ptr::null_mut();
-    let success = unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) };
-    (success != 0 && !token.is_null()).then_some(OwnedHandle(token))
-}
-
-#[cfg(windows)]
-fn read_token_user(token: RawHandle) -> Option<Vec<u8>> {
-    let mut required_len = 0;
-    unsafe {
-        let _ = GetTokenInformation(
-            token,
-            TOKEN_USER_CLASS,
-            ptr::null_mut(),
-            0,
-            &raw mut required_len,
-        );
-    }
-    if required_len == 0 {
-        return None;
-    }
-
-    let mut buffer = vec![0_u8; required_len as usize];
-    let success = unsafe {
-        GetTokenInformation(
-            token,
-            TOKEN_USER_CLASS,
-            buffer.as_mut_ptr().cast(),
-            required_len,
-            &raw mut required_len,
-        )
-    };
-    (success != 0).then_some(buffer)
-}
-
-#[cfg(windows)]
-fn lookup_account_name(sid: RawSid) -> Option<String> {
-    let mut name_len = 0;
-    let mut domain_len = 0;
-    let mut sid_name_use = 0;
-
-    unsafe {
-        let _ = LookupAccountSidW(
-            ptr::null(),
-            sid,
-            ptr::null_mut(),
-            &raw mut name_len,
-            ptr::null_mut(),
-            &raw mut domain_len,
-            &raw mut sid_name_use,
-        );
-    }
-    if name_len == 0 {
-        return None;
-    }
-
-    let mut name = vec![0_u16; name_len as usize];
-    let success = unsafe {
-        LookupAccountSidW(
-            ptr::null(),
-            sid,
-            name.as_mut_ptr(),
-            &raw mut name_len,
-            ptr::null_mut(),
-            &raw mut domain_len,
-            &raw mut sid_name_use,
-        )
-    };
-    if success == 0 {
-        return None;
-    }
-
-    Some(wide_buffer_to_string(&name))
-}
-
-#[cfg(windows)]
-fn wide_buffer_to_string(buffer: &[u16]) -> String {
-    let end = buffer
-        .iter()
-        .position(|&value| value == 0)
-        .unwrap_or(buffer.len());
-    String::from_utf16_lossy(&buffer[..end])
+fn format_windows_user_id(uid: &sysinfo::Uid) -> String {
+    (**uid).to_string()
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -1158,6 +1042,42 @@ mod tests {
             result.len(),
             2,
             "same-port listeners on different local addresses must remain distinct"
+        );
+    }
+
+    #[test]
+    fn dedup_collapses_docker_proxy_cluster_across_addresses() {
+        let mut ipv4 = make_entry(5432, Protocol::Tcp);
+        ipv4.local_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+        ipv4.pid = 2001;
+        ipv4.process = "com.docker.backend.exe".to_string();
+        ipv4.project = Some("ecom-postgres".to_string());
+        ipv4.app = Some("PostgreSQL");
+
+        let mut ipv6 = make_entry(5432, Protocol::Tcp);
+        ipv6.local_addr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
+        ipv6.pid = 2001;
+        ipv6.process = "com.docker.backend.exe".to_string();
+        ipv6.project = Some("ecom-postgres".to_string());
+        ipv6.app = Some("PostgreSQL");
+
+        let mut relay = make_entry(5432, Protocol::Tcp);
+        relay.local_addr = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        relay.pid = 2002;
+        relay.process = "wslrelay.exe".to_string();
+        relay.project = Some("ecom-postgres".to_string());
+        relay.app = Some("PostgreSQL");
+
+        let result = deduplicate(vec![ipv4, ipv6, relay]);
+        assert_eq!(
+            result.len(),
+            1,
+            "Docker Desktop proxy fan-out should collapse to a single row"
+        );
+        assert_eq!(
+            result[0].local_addr,
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            "IPv4 wildcard should be the preferred representative when present"
         );
     }
 
@@ -1315,6 +1235,20 @@ mod tests {
             read_windows_port(&row, 0),
             Some(80),
             "network-order port bytes should decode directly"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_user_id_formatting_uses_sid_string() {
+        let uid = "S-1-5-18"
+            .parse::<sysinfo::Uid>()
+            .expect("well-known SID should parse into sysinfo::Uid");
+
+        assert_eq!(
+            format_windows_user_id(&uid),
+            "S-1-5-18",
+            "Windows fallback should preserve the SID string when account-name lookup is unavailable"
         );
     }
 

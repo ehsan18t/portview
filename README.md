@@ -138,7 +138,7 @@ Additional columns with `--full`:
 | ------- | ----------------------------------------------------------------------------------------------------------------------- |
 | ADDRESS | Local bind IP address                                                                                                   |
 | STATE   | Best-effort TCP state; shared local sockets prefer `LISTEN`, ambiguous non-listener mixes show `UNKNOWN`, UDP shows `-` |
-| USER    | Owning user. Shows `-` if unavailable                                                                                   |
+| USER    | Owning user. Shows `-` if unavailable. On Windows, this may fall back to a SID string instead of an account name        |
 
 ---
 
@@ -159,7 +159,7 @@ Additional columns with `--full`:
 
 **Docker/Podman support:** Automatically detects running containers and maps their published ports to container names and images. Works via Docker socket (Linux, including common rootless socket paths) or named pipe (Windows). Podman is supported via its compatible REST API.
 
-**Duplicate suppression:** Repeated rows from the same PID are collapsed, and known Docker proxy duplicates are collapsed into one row. Distinct worker PIDs and distinct bind addresses on the same port stay visible.
+**Duplicate suppression:** Repeated rows from the same PID are collapsed, and known Docker proxy duplicates are collapsed into one row. Distinct worker PIDs and distinct non-proxy bind addresses on the same port stay visible.
 
 ---
 
