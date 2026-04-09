@@ -102,12 +102,20 @@ pub fn collect() -> Result<Vec<PortEntry>> {
 
     let mut entries = deduplicate(all_entries);
     entries.sort_by(|left, right| {
-        (left.port, left.proto, left.pid, left.process.as_str()).cmp(&(
-            right.port,
-            right.proto,
-            right.pid,
-            right.process.as_str(),
-        ))
+        (
+            left.port,
+            left.local_addr,
+            left.proto,
+            left.pid,
+            left.process.as_str(),
+        )
+            .cmp(&(
+                right.port,
+                right.local_addr,
+                right.proto,
+                right.pid,
+                right.process.as_str(),
+            ))
     });
     Ok(entries)
 }
@@ -127,7 +135,7 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
     let user = resolve_user(sysinfo_process, context.users);
 
     // Docker container lookup
-    let container = context.container_map.get(&(l.socket.port(), proto));
+    let container = lookup_container(context.container_map, l.socket, proto, &l.process.name);
 
     // Project detection: use container name for Docker ports, otherwise walk cwd.
     // The cache avoids redundant directory walks for processes sharing a cwd.
@@ -160,6 +168,7 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
 
     PortEntry {
         port: l.socket.port(),
+        local_addr: l.socket.ip(),
         proto,
         state,
         pid: l.process.pid,
@@ -169,6 +178,40 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
         app,
         uptime_secs,
     }
+}
+
+fn lookup_container<'a>(
+    container_map: &'a ContainerPortMap,
+    socket: SocketAddr,
+    proto: Protocol,
+    process_name: &str,
+) -> Option<&'a docker::ContainerInfo> {
+    if let Some(container) = container_map
+        .get(&(Some(socket.ip()), socket.port(), proto))
+        .or_else(|| container_map.get(&(None, socket.port(), proto)))
+    {
+        return Some(container);
+    }
+
+    if !is_docker_proxy_process(process_name) {
+        return None;
+    }
+
+    let mut candidate = None;
+
+    for ((_, port, key_proto), info) in container_map {
+        if *port != socket.port() || *key_proto != proto {
+            continue;
+        }
+
+        match candidate {
+            None => candidate = Some(info),
+            Some(existing) if existing == info => {}
+            Some(_) => return None,
+        }
+    }
+
+    candidate
 }
 
 /// Resolve the best-known TCP state for a listener entry.
@@ -604,10 +647,10 @@ fn lookup_cached_project_root(
 /// rows from the same PID and then removes known Docker proxy duplicates
 /// while preserving distinct non-proxy worker processes.
 fn deduplicate(entries: Vec<PortEntry>) -> Vec<PortEntry> {
-    let mut grouped: HashMap<(u16, Protocol, State), Vec<PortEntry>> = HashMap::new();
+    let mut grouped: HashMap<(u16, IpAddr, Protocol, State), Vec<PortEntry>> = HashMap::new();
 
     for entry in entries {
-        let key = (entry.port, entry.proto, entry.state);
+        let key = (entry.port, entry.local_addr, entry.proto, entry.state);
         grouped.entry(key).or_default().push(entry);
     }
 
@@ -757,6 +800,7 @@ mod tests {
     fn make_entry(port: u16, proto: Protocol) -> PortEntry {
         PortEntry {
             port,
+            local_addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             proto,
             state: State::Listen,
             pid: 1000,
@@ -820,6 +864,22 @@ mod tests {
             result.len(),
             2,
             "distinct processes on the same port should both remain"
+        );
+    }
+
+    #[test]
+    fn dedup_preserves_same_port_on_different_addresses() {
+        let mut first = make_entry(8080, Protocol::Tcp);
+        first.local_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+        let mut second = make_entry(8080, Protocol::Tcp);
+        second.local_addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+
+        let result = deduplicate(vec![first, second]);
+        assert_eq!(
+            result.len(),
+            2,
+            "same-port listeners on different local addresses must remain distinct"
         );
     }
 
@@ -986,6 +1046,57 @@ mod tests {
         assert!(is_docker_proxy_process("COM.DOCKER.BACKEND.EXE"));
         assert!(is_docker_proxy_process("vpnkit"));
         assert!(!is_docker_proxy_process("nginx"));
+    }
+
+    #[test]
+    fn container_lookup_prefers_exact_address_matches() {
+        let mut map = HashMap::new();
+        map.insert(
+            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
+            docker::ContainerInfo {
+                name: "loopback-app".to_string(),
+                image: "node:22".to_string(),
+            },
+        );
+
+        let exact = lookup_container(
+            &map,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080),
+            Protocol::Tcp,
+            "node",
+        );
+        assert_eq!(exact.map(|info| info.name.as_str()), Some("loopback-app"));
+
+        let mismatch = lookup_container(
+            &map,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 8080),
+            Protocol::Tcp,
+            "node",
+        );
+        assert!(
+            mismatch.is_none(),
+            "non-matching local addresses must not inherit container enrichment"
+        );
+    }
+
+    #[test]
+    fn container_lookup_uses_proxy_fallback_for_unique_port_mapping() {
+        let mut map = HashMap::new();
+        map.insert(
+            (Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)), 5432, Protocol::Tcp),
+            docker::ContainerInfo {
+                name: "postgres".to_string(),
+                image: "postgres:16".to_string(),
+            },
+        );
+
+        let container = lookup_container(
+            &map,
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 5432),
+            Protocol::Tcp,
+            "wslrelay.exe",
+        );
+        assert_eq!(container.map(|info| info.name.as_str()), Some("postgres"));
     }
 
     #[test]

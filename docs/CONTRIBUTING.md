@@ -103,6 +103,7 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`,
 - Unit tests live in `#[cfg(test)] mod tests` inside each module
 - Use `assert_eq!` with descriptive messages
 - Tests requiring network access or elevated privileges should be `#[ignore]`-d
+- Current table output includes an `ADDRESS` column in both default and `--full` views; update README examples in the same commit if column order or naming changes
 
 ```bash
 cargo test

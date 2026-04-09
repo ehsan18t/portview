@@ -47,25 +47,25 @@ portview --no-header
 Default view (developer-relevant ports with enrichment):
 
 ```
-╭───────┬───────┬──────────┬──────┬────────────────────┬────────────┬────────╮
-│ PORT  │ PROTO │ PROCESS  │ PID  │ PROJECT            │ APP        │ UPTIME │
-├───────┼───────┼──────────┼──────┼────────────────────┼────────────┼────────┤
-│ 3000  │ TCP   │ node     │ 8821 │ my-nextjs-app      │ Next.js    │ 2h 15m │
-│ 5432  │ TCP   │ postgres │ 902  │ backend-postgres-1 │ PostgreSQL │ 1d 3h  │
-│ 6379  │ TCP   │ redis    │ 1201 │ backend-redis-1    │ Redis      │ 1d 3h  │
-│ 8080  │ TCP   │ node     │ 9102 │ api-server         │ Vite       │ 45m    │
-╰───────┴───────┴──────────┴──────┴────────────────────┴────────────┴────────╯
+╭───────┬───────┬───────────┬──────────┬──────┬────────────────────┬────────────┬────────╮
+│ PORT  │ PROTO │ ADDRESS   │ PROCESS  │ PID  │ PROJECT            │ APP        │ UPTIME │
+├───────┼───────┼───────────┼──────────┼──────┼────────────────────┼────────────┼────────┤
+│ 3000  │ TCP   │ 127.0.0.1 │ node     │ 8821 │ my-nextjs-app      │ Next.js    │ 2h 15m │
+│ 5432  │ TCP   │ 0.0.0.0   │ postgres │ 902  │ backend-postgres-1 │ PostgreSQL │ 1d 3h  │
+│ 6379  │ TCP   │ 127.0.0.1 │ redis    │ 1201 │ backend-redis-1    │ Redis      │ 1d 3h  │
+│ 8080  │ TCP   │ 0.0.0.0   │ node     │ 9102 │ api-server         │ Vite       │ 45m    │
+╰───────┴───────┴───────────┴──────────┴──────┴────────────────────┴────────────┴────────╯
 ```
 
 Full view (`portview --full`):
 
 ```
-╭───────┬───────┬────────┬──────────┬──────┬──────────┬────────────────────┬────────────┬────────╮
-│ PORT  │ PROTO │ STATE  │ PROCESS  │ PID  │ USER     │ PROJECT            │ APP        │ UPTIME │
-├───────┼───────┼────────┼──────────┼──────┼──────────┼────────────────────┼────────────┼────────┤
-│ 3000  │ TCP   │ LISTEN │ node     │ 8821 │ ehsan    │ my-nextjs-app      │ Next.js    │ 2h 15m │
-│ 5432  │ TCP   │ LISTEN │ postgres │ 902  │ postgres │ backend-postgres-1 │ PostgreSQL │ 1d 3h  │
-╰───────┴───────┴────────┴──────────┴──────┴──────────┴────────────────────┴────────────┴────────╯
+╭───────┬───────┬───────────┬────────┬──────────┬──────┬──────────┬────────────────────┬────────────┬────────╮
+│ PORT  │ PROTO │ ADDRESS   │ STATE  │ PROCESS  │ PID  │ USER     │ PROJECT            │ APP        │ UPTIME │
+├───────┼───────┼───────────┼────────┼──────────┼──────┼──────────┼────────────────────┼────────────┼────────┤
+│ 3000  │ TCP   │ 127.0.0.1 │ LISTEN │ node     │ 8821 │ ehsan    │ my-nextjs-app      │ Next.js    │ 2h 15m │
+│ 5432  │ TCP   │ 0.0.0.0   │ LISTEN │ postgres │ 902  │ postgres │ backend-postgres-1 │ PostgreSQL │ 1d 3h  │
+╰───────┴───────┴───────────┴────────┴──────────┴──────┴──────────┴────────────────────┴────────────┴────────╯
 ```
 
 ---
@@ -125,6 +125,7 @@ Default columns:
 | ------- | -------------------------------------------------------- |
 | PORT    | Local port number                                        |
 | PROTO   | Protocol: TCP or UDP                                     |
+| ADDRESS | Local bind IP address                                    |
 | PROCESS | Process executable name                                  |
 | PID     | Process identifier                                       |
 | PROJECT | Project directory name or Docker container name          |
@@ -133,10 +134,11 @@ Default columns:
 
 Additional columns with `--full`:
 
-| Column | Description                                                                                                             |
-| ------ | ----------------------------------------------------------------------------------------------------------------------- |
-| STATE  | Best-effort TCP state; shared local sockets prefer `LISTEN`, ambiguous non-listener mixes show `UNKNOWN`, UDP shows `-` |
-| USER   | Owning user. Shows `-` if unavailable                                                                                   |
+| Column  | Description                                                                                                             |
+| ------- | ----------------------------------------------------------------------------------------------------------------------- |
+| ADDRESS | Local bind IP address                                                                                                   |
+| STATE   | Best-effort TCP state; shared local sockets prefer `LISTEN`, ambiguous non-listener mixes show `UNKNOWN`, UDP shows `-` |
+| USER    | Owning user. Shows `-` if unavailable                                                                                   |
 
 ---
 
@@ -145,6 +147,8 @@ Additional columns with `--full`:
 **Developer-relevant filter:** By default, portview only shows ports belonging to known developer tools, detected projects, or Docker containers. Use `--all` to see everything.
 
 **Explicit port queries:** `--port <num>` always shows matching sockets even when the owning process is not recognized as developer-relevant.
+
+**Interface awareness:** Listeners on the same port remain distinct when they bind to different local addresses, so `127.0.0.1:8080` and `0.0.0.0:8080` do not get merged into one row.
 
 **Project detection:** Walks upward from a process working directory looking for project markers (`package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, etc.) to identify the project name.
 
@@ -155,7 +159,7 @@ Additional columns with `--full`:
 
 **Docker/Podman support:** Automatically detects running containers and maps their published ports to container names and images. Works via Docker socket (Linux, including common rootless socket paths) or named pipe (Windows). Podman is supported via its compatible REST API.
 
-**Duplicate suppression:** Repeated rows from the same PID are collapsed, and known Docker proxy duplicates are collapsed into one row. Distinct worker PIDs on the same port stay visible.
+**Duplicate suppression:** Repeated rows from the same PID are collapsed, and known Docker proxy duplicates are collapsed into one row. Distinct worker PIDs and distinct bind addresses on the same port stay visible.
 
 ---
 

@@ -4,6 +4,8 @@
 //! input data) is isolated from measurement via `iter_batched` so
 //! results reflect only the code under test.
 
+use std::net::{IpAddr, Ipv4Addr};
+
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use portview::docker;
 use portview::filter::{self, FilterOptions};
@@ -14,6 +16,11 @@ fn synthetic_entries(n: u16) -> Vec<PortEntry> {
     (0..n)
         .map(|i| PortEntry {
             port: i,
+            local_addr: if i % 2 == 0 {
+                IpAddr::V4(Ipv4Addr::LOCALHOST)
+            } else {
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+            },
             proto: if i % 2 == 0 {
                 Protocol::Tcp
             } else {

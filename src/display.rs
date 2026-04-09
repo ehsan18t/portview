@@ -41,16 +41,18 @@ pub fn print_table(entries: &[PortEntry], opts: &DisplayOptions) -> Result<()> {
     if opts.show_header {
         if opts.full {
             table.set_header(vec![
-                "PORT", "PROTO", "STATE", "PROCESS", "PID", "USER", "PROJECT", "APP", "UPTIME",
+                "PORT", "PROTO", "ADDRESS", "STATE", "PROCESS", "PID", "USER", "PROJECT", "APP",
+                "UPTIME",
             ]);
         } else {
             table.set_header(vec![
-                "PORT", "PROTO", "PROCESS", "PID", "PROJECT", "APP", "UPTIME",
+                "PORT", "PROTO", "ADDRESS", "PROCESS", "PID", "PROJECT", "APP", "UPTIME",
             ]);
         }
     }
 
     for entry in entries {
+        let local_addr = entry.local_addr.to_string();
         let process_display = truncate_process_name(&entry.process);
         let project = entry.project.as_deref().unwrap_or("-");
         let app = entry.app.unwrap_or("-");
@@ -60,6 +62,7 @@ pub fn print_table(entries: &[PortEntry], opts: &DisplayOptions) -> Result<()> {
             table.add_row(vec![
                 entry.port.to_string(),
                 entry.proto.to_string(),
+                local_addr.clone(),
                 entry.state.to_string(),
                 process_display,
                 entry.pid.to_string(),
@@ -72,6 +75,7 @@ pub fn print_table(entries: &[PortEntry], opts: &DisplayOptions) -> Result<()> {
             table.add_row(vec![
                 entry.port.to_string(),
                 entry.proto.to_string(),
+                local_addr,
                 process_display,
                 entry.pid.to_string(),
                 project.to_string(),

@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
+use std::net::IpAddr;
 #[cfg(unix)]
 use std::path::PathBuf;
 
@@ -17,6 +18,8 @@ use crate::types::Protocol;
 
 #[derive(Deserialize)]
 struct DockerPort<'a> {
+    #[serde(rename = "IP")]
+    host_ip: Option<IpAddr>,
     #[serde(rename = "PublicPort")]
     public_port: Option<u16>,
     #[serde(rename = "Type")]
@@ -36,7 +39,7 @@ struct DockerContainer<'a> {
 }
 
 /// Metadata about a running container that has published ports.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerInfo {
     /// Container name (e.g. "backend-postgres-1").
     pub name: String,
@@ -45,7 +48,7 @@ pub struct ContainerInfo {
 }
 
 /// Maps `(host_port, protocol)` to container info.
-pub type ContainerPortMap = HashMap<(u16, Protocol), ContainerInfo>;
+pub type ContainerPortMap = HashMap<(Option<IpAddr>, u16, Protocol), ContainerInfo>;
 
 /// Maximum time to wait for the Docker/Podman daemon to respond.
 ///
@@ -99,7 +102,7 @@ fn query_daemon() -> Option<ContainerPortMap> {
 /// Parse the JSON response from `GET /containers/json` into a port map.
 ///
 /// Each container may publish multiple ports. The map keys are
-/// `(public_port, protocol)` tuples.
+/// `(public_ip, public_port, protocol)` tuples.
 #[must_use]
 pub fn parse_containers_json(json_body: &str) -> ContainerPortMap {
     let mut map = ContainerPortMap::new();
@@ -126,7 +129,7 @@ pub fn parse_containers_json(json_body: &str) -> ContainerPortMap {
                 _ => Protocol::Tcp,
             };
 
-            map.insert((public_port, proto), info.clone());
+            map.insert((port.host_ip, public_port, proto), info.clone());
         }
     }
 
@@ -287,6 +290,7 @@ fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
 
     use crate::types::Protocol;
 
@@ -317,11 +321,11 @@ mod tests {
         let map = parse_containers_json(SAMPLE_RESPONSE);
         assert_eq!(map.len(), 2);
 
-        let pg = map.get(&(5432, Protocol::Tcp)).unwrap();
+        let pg = map.get(&(None, 5432, Protocol::Tcp)).unwrap();
         assert_eq!(pg.name, "backend-postgres-1");
         assert_eq!(pg.image, "postgres:16");
 
-        let redis = map.get(&(6379, Protocol::Tcp)).unwrap();
+        let redis = map.get(&(None, 6379, Protocol::Tcp)).unwrap();
         assert_eq!(redis.name, "backend-redis-1");
         assert_eq!(redis.image, "redis:7-alpine");
     }
@@ -360,7 +364,7 @@ mod tests {
             "Ports": [{"PrivatePort": 80, "PublicPort": 80, "Type": "tcp"}]
         }]"#;
         let map = parse_containers_json(json);
-        let info = map.get(&(80, Protocol::Tcp)).unwrap();
+        let info = map.get(&(None, 80, Protocol::Tcp)).unwrap();
         assert_eq!(info.name, "my-container");
     }
 
@@ -376,8 +380,8 @@ mod tests {
         }]"#;
         let map = parse_containers_json(json);
         assert_eq!(map.len(), 2);
-        assert!(map.contains_key(&(8080, Protocol::Tcp)));
-        assert!(map.contains_key(&(8443, Protocol::Tcp)));
+        assert!(map.contains_key(&(None, 8080, Protocol::Tcp)));
+        assert!(map.contains_key(&(None, 8443, Protocol::Tcp)));
     }
 
     #[test]
@@ -389,7 +393,7 @@ mod tests {
         }]"#;
         let map = parse_containers_json(json);
         assert!(
-            map.contains_key(&(8080, Protocol::Tcp)),
+            map.contains_key(&(None, 8080, Protocol::Tcp)),
             "missing Type should default to TCP"
         );
     }
@@ -402,7 +406,7 @@ mod tests {
             "Ports": [{"PrivatePort": 80, "PublicPort": 80, "Type": "tcp"}]
         }]"#;
         let map = parse_containers_json(json);
-        let info = map.get(&(80, Protocol::Tcp)).unwrap();
+        let info = map.get(&(None, 80, Protocol::Tcp)).unwrap();
         assert_eq!(
             info.name, "app:latest",
             "containers without names should fall back to their image"
@@ -417,11 +421,23 @@ mod tests {
             "Ports": [{"PrivatePort": 80, "PublicPort": 80, "Type": "tcp"}]
         }]"#;
         let map = parse_containers_json(json);
-        let info = map.get(&(80, Protocol::Tcp)).unwrap();
+        let info = map.get(&(None, 80, Protocol::Tcp)).unwrap();
         assert_eq!(
             info.name, "0123456789ab",
             "containers without names or images should fall back to a short id"
         );
+    }
+
+    #[test]
+    fn parse_container_with_explicit_host_ip() {
+        let json = r#"[{
+            "Names": ["/api"],
+            "Image": "node:22",
+            "Ports": [{"IP": "127.0.0.1", "PrivatePort": 3000, "PublicPort": 8080, "Type": "tcp"}]
+        }]"#;
+        let map = parse_containers_json(json);
+
+        assert!(map.contains_key(&(Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp,)));
     }
 
     #[cfg(unix)]

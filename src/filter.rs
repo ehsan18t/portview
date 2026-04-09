@@ -6,6 +6,9 @@
 use crate::framework;
 use crate::types::{PortEntry, Protocol, State};
 
+#[cfg(test)]
+use std::net::{IpAddr, Ipv4Addr};
+
 /// Options controlling which entries pass through the filter.
 #[allow(clippy::struct_excessive_bools)]
 pub struct FilterOptions {
@@ -77,6 +80,7 @@ mod tests {
     fn make_entry(port: u16, proto: Protocol, state: State) -> PortEntry {
         PortEntry {
             port,
+            local_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             proto,
             state,
             pid: 1234,

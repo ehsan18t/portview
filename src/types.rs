@@ -2,6 +2,8 @@
 //!
 //! Contains the [`PortEntry`] struct used across all modules.
 
+use std::net::IpAddr;
+
 use serde::Serialize;
 
 /// Protocol type for a socket entry.
@@ -87,6 +89,8 @@ impl std::fmt::Display for State {
 pub struct PortEntry {
     /// Local port number.
     pub port: u16,
+    /// Local bind address for the socket.
+    pub local_addr: IpAddr,
     /// Protocol (TCP or UDP).
     pub proto: Protocol,
     /// Connection state: `Listen` for TCP, `NotApplicable` for UDP.
