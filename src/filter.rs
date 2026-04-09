@@ -3,6 +3,7 @@
 //! Applies user-specified CLI filters to the collected port entries before
 //! display.
 
+use crate::framework;
 use crate::types::{PortEntry, Protocol, State};
 
 /// Options controlling which entries pass through the filter.
@@ -20,84 +21,18 @@ pub struct FilterOptions {
     pub show_all: bool,
 }
 
-/// Process names considered developer-relevant for the default filter.
-const RELEVANT_PROCESSES: &[&str] = &[
-    // Runtimes
-    "node",
-    "nodejs",
-    "python",
-    "python3",
-    "ruby",
-    "java",
-    "go",
-    "deno",
-    "bun",
-    "dotnet",
-    "php",
-    "perl",
-    "cargo",
-    "rustc",
-    "erlang",
-    "elixir",
-    "beam.smp",
-    "dart",
-    "swift",
-    // Databases
-    "postgres",
-    "postgresql",
-    "mysqld",
-    "mysql",
-    "mariadbd",
-    "mariadb",
-    "mongod",
-    "mongos",
-    "redis-server",
-    "redis",
-    "valkey-server",
-    "valkey",
-    "memcached",
-    "clickhouse-server",
-    "cockroach",
-    // Web servers / app servers
-    "nginx",
-    "apache2",
-    "httpd",
-    "caddy",
-    "traefik",
-    "envoy",
-    "haproxy",
-    "gunicorn",
-    "uvicorn",
-    // Search/messaging
-    "elasticsearch",
-    "opensearch",
-    "rabbitmq-server",
-    "kafka",
-    // Dev tools / frameworks
-    "webpack",
-    "vite",
-    "next-server",
-    "nuxt",
-    "hugo",
-    "jekyll",
-    "flask",
-    "rails",
-    "gradle",
-    "mvn",
-];
-
 /// Check whether a port entry is considered developer-relevant.
 ///
-/// An entry is relevant if it has a detected project, app label, Docker
-/// container, or a recognized process name.
+/// An entry is relevant if it has a detected project, app label, or a
+/// process name recognized by [`framework::detect_from_process`].
+/// The framework module is the single source of truth for known process
+/// names, eliminating the need for a duplicate list here.
 fn is_relevant(entry: &PortEntry) -> bool {
     if entry.project.is_some() || entry.app.is_some() {
         return true;
     }
 
-    let name = entry.process.strip_suffix(".exe").unwrap_or(&entry.process);
-    let lower = name.to_ascii_lowercase();
-    RELEVANT_PROCESSES.contains(&lower.as_str())
+    framework::detect_from_process(&entry.process).is_some()
 }
 
 /// Apply the given filter options to a collection of entries.
