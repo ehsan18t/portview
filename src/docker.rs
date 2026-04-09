@@ -156,8 +156,11 @@ fn fetch_containers_json() -> Option<String> {
 fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Option<String> {
     use std::io::Read as _;
 
+    // Omit the API version prefix so the daemon uses its own default version.
+    // Hardcoding e.g. `/v1.45/` would cause a 400 on older daemons whose max
+    // API version is lower than the requested one.
     stream
-        .write_all(b"GET /v1.45/containers/json HTTP/1.0\r\nHost: localhost\r\n\r\n")
+        .write_all(b"GET /containers/json HTTP/1.0\r\nHost: localhost\r\n\r\n")
         .ok()?;
 
     let mut reader = BufReader::new(stream);
