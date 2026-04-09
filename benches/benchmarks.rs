@@ -39,6 +39,7 @@ fn bench_filter(c: &mut Criterion) {
                     udp_only: false,
                     listen_only: false,
                     port: None,
+                    show_all: true,
                 },
             )
         });

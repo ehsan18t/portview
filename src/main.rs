@@ -64,6 +64,7 @@ fn run() -> Result<()> {
             udp_only: cli.udp,
             listen_only: cli.listen,
             port: cli.port,
+            show_all: true, // TODO: wire to --all flag in Task 9
         },
     );
 
