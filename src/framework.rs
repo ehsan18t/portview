@@ -110,9 +110,8 @@ pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
         if best.is_none()
             && let Some(ext) = std::path::Path::new(name).extension()
         {
-            let ext_str = ext.to_string_lossy();
             for (target_ext, label) in CONFIG_EXTENSIONS {
-                if *target_ext == ext_str.as_ref() {
+                if *target_ext == ext {
                     best = Some((CONFIG_PATTERNS.len(), label));
                     break;
                 }

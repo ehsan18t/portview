@@ -137,14 +137,10 @@ fn has_marker(dir: &Path) -> bool {
             return true;
         }
 
-        if let Some(ext) = std::path::Path::new(name).extension() {
-            let ext_str = ext.to_string_lossy();
-            if PROJECT_MARKER_EXTENSIONS
-                .iter()
-                .any(|m| *m == ext_str.as_ref())
-            {
-                return true;
-            }
+        if let Some(ext) = std::path::Path::new(name).extension()
+            && PROJECT_MARKER_EXTENSIONS.iter().any(|m| *m == ext)
+        {
+            return true;
         }
     }
 
