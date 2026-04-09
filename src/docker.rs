@@ -157,7 +157,16 @@ fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Opti
 
     let mut reader = BufReader::new(stream);
 
-    // Skip HTTP response headers (read until empty line)
+    // Read and validate the HTTP status line (e.g. "HTTP/1.0 200 OK").
+    // Bail out early on non-2xx responses to avoid parsing error bodies.
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).ok()?;
+    let status_code: u16 = status_line.split_whitespace().nth(1)?.parse().ok()?;
+    if !(200..300).contains(&status_code) {
+        return None;
+    }
+
+    // Skip remaining response headers (read until empty line)
     let mut line = String::new();
     loop {
         line.clear();
