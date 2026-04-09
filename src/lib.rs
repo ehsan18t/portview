@@ -5,10 +5,13 @@
 //!
 //! ## Module structure
 //!
-//! - [`types`] - `PortEntry` struct shared across all modules
-//! - [`collector`] - socket enumeration via `listeners` + process metadata via `sysinfo`
-//! - [`filter`] - applies user-specified CLI filters before display
-//! - [`display`] - renders results as an aligned table or JSON
+//! - [`types`] - `PortEntry` struct and shared enums
+//! - [`collector`] - socket enumeration + process/project/app enrichment
+//! - [`filter`] - CLI filters and developer-relevance filter
+//! - [`display`] - renders results as bordered/compact table or JSON
+//! - [`docker`] - Docker/Podman container detection via socket API
+//! - [`project`] - project root detection via marker file walk
+//! - [`framework`] - app/framework detection from images, configs, process names
 
 pub mod collector;
 pub mod display;
