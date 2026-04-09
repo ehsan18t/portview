@@ -5,7 +5,7 @@
 //! Docker container info, project root detection, and app/framework labels.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
@@ -44,9 +44,11 @@ pub fn collect() -> Result<Vec<PortEntry>> {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
+    let mut project_cache: HashMap<PathBuf, Option<PathBuf>> = HashMap::new();
+
     let all_entries: Vec<PortEntry> = raw_listeners
         .into_iter()
-        .map(|l| build_entry(&l, &sys, &users, &container_map, now_epoch))
+        .map(|l| build_entry(&l, &sys, &users, &container_map, now_epoch, &mut project_cache))
         .collect();
 
     let mut entries = deduplicate(all_entries);
@@ -62,6 +64,7 @@ fn build_entry(
     users: &Users,
     container_map: &ContainerPortMap,
     now_epoch: u64,
+    project_cache: &mut HashMap<PathBuf, Option<PathBuf>>,
 ) -> PortEntry {
     let proto = match l.protocol {
         listeners::Protocol::TCP => Protocol::Tcp,
@@ -80,19 +83,12 @@ fn build_entry(
     // Docker container lookup
     let container = container_map.get(&(l.socket.port(), proto));
 
-    // Project detection: use container name for Docker ports, otherwise walk cwd
+    // Project detection: use container name for Docker ports, otherwise walk cwd.
+    // The cache avoids redundant directory walks for processes sharing a cwd.
     let (project_name, project_root) = container.map_or_else(
         || {
             let cwd = sysinfo_process.and_then(|p| p.cwd().map(Path::to_path_buf));
-            let cmd: Vec<String> = sysinfo_process
-                .map(|p| {
-                    p.cmd()
-                        .iter()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .collect()
-                })
-                .unwrap_or_default();
-            let root = project::detect_project_root(cwd.as_deref(), &cmd);
+            let root = lookup_project_root(cwd.as_ref(), sysinfo_process, project_cache);
             let name = root
                 .as_ref()
                 .and_then(|r| r.file_name())
@@ -126,6 +122,53 @@ fn build_entry(
         app,
         uptime_secs,
     }
+}
+
+/// Look up the project root for a process, using a cache to skip repeated
+/// directory walks for processes that share the same working directory.
+///
+/// Falls back to parsing command-line arguments when cwd-based detection
+/// fails. The fallback is per-process and not cached.
+fn lookup_project_root(
+    cwd: Option<&PathBuf>,
+    sysinfo_process: Option<&sysinfo::Process>,
+    cache: &mut HashMap<PathBuf, Option<PathBuf>>,
+) -> Option<PathBuf> {
+    if let Some(cwd_path) = cwd {
+        if let Some(cached) = cache.get(cwd_path) {
+            if cached.is_some() {
+                return cached.clone();
+            }
+        } else {
+            let result = project::find_from_dir(cwd_path);
+            cache.insert(cwd_path.clone(), result.clone());
+            if result.is_some() {
+                return result;
+            }
+        }
+    }
+
+    // Fallback: look for absolute paths in command-line arguments.
+    // Only checked when cwd-based detection found nothing.
+    let cmd: Vec<String> = sysinfo_process
+        .map(|p| {
+            p.cmd()
+                .iter()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for arg in &cmd {
+        let path = Path::new(arg.as_str());
+        if path.is_absolute()
+            && let Some(parent) = path.parent()
+            && let Some(root) = project::find_from_dir(parent)
+        {
+            return Some(root);
+        }
+    }
+    None
 }
 
 /// Deduplicate entries that share the same `(port, protocol)`.

@@ -34,7 +34,7 @@ const PROJECT_MARKER_EXTENSIONS: &[&str] = &["csproj", "fsproj"];
 /// root can be determined.
 pub fn detect_project_root(cwd: Option<&Path>, cmd: &[impl AsRef<str>]) -> Option<PathBuf> {
     if let Some(cwd) = cwd
-        && let Some(root) = find_project_root(cwd)
+        && let Some(root) = find_from_dir(cwd)
     {
         return Some(root);
     }
@@ -44,7 +44,7 @@ pub fn detect_project_root(cwd: Option<&Path>, cmd: &[impl AsRef<str>]) -> Optio
         let path = Path::new(arg.as_ref());
         if path.is_absolute()
             && let Some(parent) = path.parent()
-            && let Some(root) = find_project_root(parent)
+            && let Some(root) = find_from_dir(parent)
         {
             return Some(root);
         }
@@ -57,7 +57,12 @@ pub fn detect_project_root(cwd: Option<&Path>, cmd: &[impl AsRef<str>]) -> Optio
 ///
 /// Returns the path of the directory containing the first marker found,
 /// or `None` if no marker is found before reaching the filesystem root.
-fn find_project_root(start: &Path) -> Option<PathBuf> {
+///
+/// This is the cwd-only variant exposed for caching in the collector.
+/// Use [`detect_project_root`] for the full detection pipeline that also
+/// checks command-line arguments.
+#[must_use]
+pub fn find_from_dir(start: &Path) -> Option<PathBuf> {
     let mut current = start.to_path_buf();
 
     loop {
