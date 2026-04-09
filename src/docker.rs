@@ -140,12 +140,17 @@ fn fetch_containers_json() -> Option<String> {
 fn fetch_containers_json() -> Option<String> {
     use std::fs::OpenOptions;
 
-    let mut stream = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(r"\\.\pipe\docker_engine")
-        .ok()?;
-    send_http_request(&mut stream)
+    let pipe_paths = [
+        r"\\.\pipe\docker_engine",
+        r"\\.\pipe\podman-machine-default",
+    ];
+
+    for path in &pipe_paths {
+        if let Ok(mut stream) = OpenOptions::new().read(true).write(true).open(path) {
+            return send_http_request(&mut stream);
+        }
+    }
+    None
 }
 
 fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Option<String> {
