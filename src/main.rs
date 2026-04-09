@@ -35,6 +35,18 @@ struct Cli {
     #[arg(short = 'p', long = "port")]
     port: Option<u16>,
 
+    /// Show all ports (disable developer-relevant filter).
+    #[arg(short = 'a', long = "all")]
+    all: bool,
+
+    /// Show all columns (adds STATE, USER).
+    #[arg(short = 'f', long = "full")]
+    full: bool,
+
+    /// Use compact borderless table style.
+    #[arg(short = 'c', long = "compact")]
+    compact: bool,
+
     /// Suppress the column header row.
     #[arg(long = "no-header")]
     no_header: bool,
@@ -64,7 +76,7 @@ fn run() -> Result<()> {
             udp_only: cli.udp,
             listen_only: cli.listen,
             port: cli.port,
-            show_all: true, // TODO: wire to --all flag in Task 9
+            show_all: cli.all,
         },
     );
 
@@ -75,8 +87,8 @@ fn run() -> Result<()> {
             &filtered,
             &display::DisplayOptions {
                 show_header: !cli.no_header,
-                full: false,    // TODO: wire to --full flag in Task 9
-                compact: false, // TODO: wire to --compact flag in Task 9
+                full: cli.full,
+                compact: cli.compact,
             },
         )?;
     }
