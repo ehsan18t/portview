@@ -71,24 +71,30 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// Check whether a directory contains any project marker file.
+///
+/// Uses a single readdir call and in-memory checks instead of individual
+/// stat calls per marker, reducing I/O for directories without markers.
 fn has_marker(dir: &Path) -> bool {
-    for marker in PROJECT_MARKERS {
-        if dir.join(marker).exists() {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        let Some(name) = entry.file_name().to_str().map(String::from) else {
+            continue;
+        };
+
+        if PROJECT_MARKERS.iter().any(|m| *m == name) {
             return true;
         }
-    }
 
-    // Check extension-based markers (*.csproj, *.fsproj)
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.filter_map(Result::ok) {
-            if let Some(ext) = entry.path().extension() {
-                let ext_str = ext.to_string_lossy();
-                if PROJECT_MARKER_EXTENSIONS
-                    .iter()
-                    .any(|m| *m == ext_str.as_ref())
-                {
-                    return true;
-                }
+        if let Some(ext) = std::path::Path::new(&name).extension() {
+            let ext_str = ext.to_string_lossy();
+            if PROJECT_MARKER_EXTENSIONS
+                .iter()
+                .any(|m| *m == ext_str.as_ref())
+            {
+                return true;
             }
         }
     }
