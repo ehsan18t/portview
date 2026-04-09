@@ -122,66 +122,83 @@ pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
     best.map(|(_, label)| label)
 }
 
+/// Known process names mapped to their app/framework labels.
+///
+/// Linear scan with [`str::eq_ignore_ascii_case`] avoids allocating a
+/// lowercase `String` on every call to [`detect_from_process`].
+const PROCESS_MAP: &[(&str, &str)] = &[
+    // Runtimes
+    ("node", "Node.js"),
+    ("nodejs", "Node.js"),
+    ("python", "Python"),
+    ("python3", "Python"),
+    ("ruby", "Ruby"),
+    ("java", "Java"),
+    ("go", "Go"),
+    ("deno", "Deno"),
+    ("bun", "Bun"),
+    ("dotnet", ".NET"),
+    ("php", "PHP"),
+    ("perl", "Perl"),
+    ("cargo", "Rust"),
+    ("rustc", "Rust"),
+    ("erlang", "Erlang"),
+    ("beam.smp", "Erlang"),
+    ("elixir", "Elixir"),
+    ("dart", "Dart"),
+    ("swift", "Swift"),
+    // Databases
+    ("postgres", "PostgreSQL"),
+    ("postgresql", "PostgreSQL"),
+    ("mysqld", "MySQL"),
+    ("mysql", "MySQL"),
+    ("mariadbd", "MariaDB"),
+    ("mariadb", "MariaDB"),
+    ("mongod", "MongoDB"),
+    ("mongos", "MongoDB"),
+    ("redis-server", "Redis"),
+    ("redis", "Redis"),
+    ("valkey-server", "Valkey"),
+    ("valkey", "Valkey"),
+    ("memcached", "Memcached"),
+    ("clickhouse-server", "ClickHouse"),
+    ("cockroach", "CockroachDB"),
+    // Web servers
+    ("nginx", "Nginx"),
+    ("apache2", "Apache"),
+    ("httpd", "Apache"),
+    ("caddy", "Caddy"),
+    ("traefik", "Traefik"),
+    ("envoy", "Envoy"),
+    ("haproxy", "HAProxy"),
+    ("gunicorn", "Gunicorn"),
+    ("uvicorn", "Uvicorn"),
+    // Search/messaging
+    ("elasticsearch", "Elasticsearch"),
+    ("opensearch", "OpenSearch"),
+    ("rabbitmq-server", "RabbitMQ"),
+    ("kafka", "Kafka"),
+    // Dev tools
+    ("webpack", "Webpack"),
+    ("vite", "Vite"),
+    ("next-server", "Next.js"),
+    ("nuxt", "Nuxt"),
+    ("hugo", "Hugo"),
+    ("jekyll", "Jekyll"),
+    ("flask", "Flask"),
+    ("rails", "Rails"),
+    ("gradle", "Java (Gradle)"),
+    ("mvn", "Java (Maven)"),
+];
+
 /// Detect app label from a process executable name.
 #[must_use]
 pub fn detect_from_process(process_name: &str) -> Option<&'static str> {
     let name = process_name.strip_suffix(".exe").unwrap_or(process_name);
-    let lower = name.to_ascii_lowercase();
-
-    match lower.as_str() {
-        // Runtimes
-        "node" | "nodejs" => Some("Node.js"),
-        "python" | "python3" => Some("Python"),
-        "ruby" => Some("Ruby"),
-        "java" => Some("Java"),
-        "go" => Some("Go"),
-        "deno" => Some("Deno"),
-        "bun" => Some("Bun"),
-        "dotnet" => Some(".NET"),
-        "php" => Some("PHP"),
-        "perl" => Some("Perl"),
-        "cargo" | "rustc" => Some("Rust"),
-        "erlang" | "beam.smp" => Some("Erlang"),
-        "elixir" => Some("Elixir"),
-        "dart" => Some("Dart"),
-        "swift" => Some("Swift"),
-        // Databases
-        "postgres" | "postgresql" => Some("PostgreSQL"),
-        "mysqld" | "mysql" => Some("MySQL"),
-        "mariadbd" | "mariadb" => Some("MariaDB"),
-        "mongod" | "mongos" => Some("MongoDB"),
-        "redis-server" | "redis" => Some("Redis"),
-        "valkey-server" | "valkey" => Some("Valkey"),
-        "memcached" => Some("Memcached"),
-        "clickhouse-server" => Some("ClickHouse"),
-        "cockroach" => Some("CockroachDB"),
-        // Web servers
-        "nginx" => Some("Nginx"),
-        "apache2" | "httpd" => Some("Apache"),
-        "caddy" => Some("Caddy"),
-        "traefik" => Some("Traefik"),
-        "envoy" => Some("Envoy"),
-        "haproxy" => Some("HAProxy"),
-        "gunicorn" => Some("Gunicorn"),
-        "uvicorn" => Some("Uvicorn"),
-        // Search/messaging
-        "elasticsearch" => Some("Elasticsearch"),
-        "opensearch" => Some("OpenSearch"),
-        "rabbitmq-server" => Some("RabbitMQ"),
-        "kafka" => Some("Kafka"),
-        // Dev tools
-        "webpack" => Some("Webpack"),
-        "vite" => Some("Vite"),
-        "next-server" => Some("Next.js"),
-        "nuxt" => Some("Nuxt"),
-        "hugo" => Some("Hugo"),
-        "jekyll" => Some("Jekyll"),
-        "flask" => Some("Flask"),
-        "rails" => Some("Rails"),
-        "gradle" => Some("Java (Gradle)"),
-        "mvn" => Some("Java (Maven)"),
-        _ => None,
-    }
+    PROCESS_MAP
+        .iter()
+        .find(|(key, _)| name.eq_ignore_ascii_case(key))
+        .map(|(_, label)| *label)
 }
 
 /// Detect the app label for a port entry using all available information.
