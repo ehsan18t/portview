@@ -5,7 +5,7 @@
 //! Docker container info, project root detection, and app/framework labels.
 
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 #[cfg(unix)]
 use std::ffi::CStr;
 use std::ffi::OsString;
@@ -82,12 +82,12 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
 
     let mut sys = System::new();
 
-    let tracked_pids: Vec<_> = raw_listeners
+    let mut tracked_pids: Vec<_> = raw_listeners
         .iter()
         .map(|listener| sysinfo::Pid::from_u32(listener.process.pid))
-        .collect::<HashSet<_>>()
-        .into_iter()
         .collect();
+    tracked_pids.sort_unstable();
+    tracked_pids.dedup();
     debug!(
         deep_enrichment = options.deep_enrichment,
         listeners = raw_listeners.len(),
