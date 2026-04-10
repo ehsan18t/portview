@@ -12,6 +12,35 @@
 
 set -e
 
+ensure_cargo() {
+    if command -v cargo >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # Git can execute hooks with a reduced PATH outside the user's shell init.
+    if [ -f "$HOME/.cargo/env" ]; then
+        . "$HOME/.cargo/env"
+    fi
+
+    if command -v cargo >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [ -x "$HOME/.cargo/bin/cargo" ]; then
+        PATH="$HOME/.cargo/bin:$PATH"
+        export PATH
+        return 0
+    fi
+
+    echo ""
+    echo "✗ RUST TOOLCHAIN NOT FOUND"
+    echo "  cargo is not available in the git hook environment."
+    echo "  Install Rust or source ~/.cargo/env, then try again."
+    exit 1
+}
+
+ensure_cargo
+
 echo "╔══════════════════════════════════════════╗"
 echo "║     portview Pre-Commit Quality Gate      ║"
 echo "╚══════════════════════════════════════════╝"
