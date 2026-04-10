@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read as _, Write as _};
 use std::net::IpAddr;
 #[cfg(unix)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::{ffi::OsStr, ffi::c_void, os::windows::ffi::OsStrExt, os::windows::io::AsRawHandle};
 
@@ -20,12 +20,19 @@ use crate::types::Protocol;
 
 #[derive(Deserialize)]
 struct DockerPort<'a> {
-    #[serde(rename = "IP")]
+    #[serde(
+        rename = "IP",
+        alias = "host_ip",
+        default,
+        deserialize_with = "deserialize_host_ip"
+    )]
     host_ip: Option<IpAddr>,
-    #[serde(rename = "PublicPort")]
+    #[serde(rename = "PublicPort", alias = "host_port")]
     public_port: Option<u16>,
-    #[serde(rename = "Type")]
+    #[serde(rename = "Type", alias = "protocol")]
     proto: Option<&'a str>,
+    #[serde(alias = "range")]
+    port_range: Option<u16>,
 }
 
 #[derive(Deserialize)]
@@ -127,9 +134,73 @@ pub fn await_detection(handle: DetectionHandle) -> ContainerPortMap {
         .unwrap_or_default()
 }
 
+#[cfg(unix)]
 fn query_daemon() -> Option<ContainerPortMap> {
-    let body = fetch_containers_json()?;
-    Some(parse_containers_json(&body))
+    // Honour DOCKER_HOST when it specifies a TCP address.
+    if let Some(addr) = docker_host_tcp_addr() {
+        return fetch_tcp_json(&addr).and_then(|body| merge_daemon_responses([body]));
+    }
+
+    // Honour DOCKER_HOST when it points at a Unix socket (unix://).
+    if let Some(path) = docker_host_unix_path() {
+        return fetch_unix_socket_json(Path::new(&path))
+            .and_then(|body| merge_daemon_responses([body]));
+    }
+
+    // Safety: getuid() is a simple syscall with no preconditions.
+    let uid = unsafe { libc::getuid() };
+    let responses =
+        fetch_all_successes(unix_socket_paths(uid, crate::project::home_dir()), |path| {
+            fetch_unix_socket_json(Path::new(&path))
+        });
+
+    merge_daemon_responses(responses)
+}
+
+#[cfg(windows)]
+fn query_daemon() -> Option<ContainerPortMap> {
+    let deadline = std::time::Instant::now() + DAEMON_TIMEOUT;
+
+    // Honour DOCKER_HOST when it specifies a TCP address.
+    if let Some(addr) = docker_host_tcp_addr() {
+        return fetch_tcp_json(&addr).map(|body| parse_containers_json(&body));
+    }
+
+    // Honour DOCKER_HOST when it points at a named pipe (npipe://).
+    if let Some(path) = docker_host_npipe_path()
+        && let Some(body) = fetch_named_pipe_json(&path, deadline)
+    {
+        return Some(parse_containers_json(&body));
+    }
+
+    let pipe_paths = [
+        r"\\.\pipe\docker_engine",
+        r"\\.\pipe\podman-machine-default",
+    ];
+
+    for path in pipe_paths {
+        if let Some(body) = fetch_named_pipe_json(path, deadline) {
+            return Some(parse_containers_json(&body));
+        }
+    }
+
+    None
+}
+
+fn merge_daemon_responses<T, I>(responses: I) -> Option<ContainerPortMap>
+where
+    T: AsRef<str>,
+    I: IntoIterator<Item = T>,
+{
+    let mut saw_response = false;
+    let mut merged = ContainerPortMap::new();
+
+    for response in responses {
+        saw_response = true;
+        merged.extend(parse_containers_json(response.as_ref()));
+    }
+
+    saw_response.then_some(merged)
 }
 
 /// Parse the JSON response from `GET /containers/json` into a port map.
@@ -162,11 +233,32 @@ pub fn parse_containers_json(json_body: &str) -> ContainerPortMap {
                 _ => Protocol::Tcp,
             };
 
-            map.insert((port.host_ip, public_port, proto), info.clone());
+            let port_count = port.port_range.unwrap_or(1);
+            for offset in 0..port_count {
+                let Some(mapped_port) = public_port.checked_add(offset) else {
+                    break;
+                };
+
+                map.insert((port.host_ip, mapped_port, proto), info.clone());
+            }
         }
     }
 
     map
+}
+
+fn deserialize_host_ip<'de, D>(deserializer: D) -> Result<Option<IpAddr>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|ip| !ip.is_empty())
+        .map(str::parse)
+        .transpose()
+        .map_err(serde::de::Error::custom)
 }
 
 fn container_display_name(container: &DockerContainer<'_>) -> String {
@@ -201,18 +293,16 @@ fn short_container_id(id: &str) -> String {
 }
 
 #[cfg(unix)]
-fn fetch_first_success<P, I, F>(candidates: I, fetch: F) -> Option<String>
+fn fetch_all_successes<P, I, F>(candidates: I, fetch: F) -> Vec<String>
 where
     P: Send + 'static,
     I: IntoIterator<Item = P>,
     F: Fn(P) -> Option<String> + Send + Sync + 'static,
 {
-    let mut has_candidates = false;
     let (tx, rx) = std::sync::mpsc::channel();
     let fetch = std::sync::Arc::new(fetch);
 
     for candidate in candidates {
-        has_candidates = true;
         let tx = tx.clone();
         let fetch = std::sync::Arc::clone(&fetch);
         std::thread::spawn(move || {
@@ -223,58 +313,22 @@ where
     }
 
     drop(tx);
-    has_candidates.then_some(())?;
-    rx.recv_timeout(DAEMON_TIMEOUT).ok()
-}
-
-#[cfg(unix)]
-fn fetch_containers_json() -> Option<String> {
-    use std::os::unix::net::UnixStream;
-
-    // Honour DOCKER_HOST when it specifies a TCP address.
-    if let Some(addr) = docker_host_tcp_addr() {
-        return fetch_tcp_json(&addr);
-    }
-
-    // Safety: getuid() is a simple syscall with no preconditions.
-    let uid = unsafe { libc::getuid() };
-
-    fetch_first_success(unix_socket_paths(uid, crate::project::home_dir()), |path| {
-        let mut stream = UnixStream::connect(path).ok()?;
-        // Best-effort timeout; proceed even if it cannot be set.
-        drop(stream.set_read_timeout(Some(DAEMON_TIMEOUT)));
-        send_http_request(&mut stream)
-    })
-}
-
-#[cfg(windows)]
-fn fetch_containers_json() -> Option<String> {
+    let mut responses = Vec::new();
     let deadline = std::time::Instant::now() + DAEMON_TIMEOUT;
 
-    // Honour DOCKER_HOST when it specifies a TCP address.
-    if let Some(addr) = docker_host_tcp_addr() {
-        return fetch_tcp_json(&addr);
-    }
-
-    // Honour DOCKER_HOST when it points at a named pipe (npipe://).
-    if let Some(path) = docker_host_npipe_path()
-        && let Some(body) = fetch_named_pipe_json(&path, deadline)
-    {
-        return Some(body);
-    }
-
-    let pipe_paths = [
-        r"\\.\pipe\docker_engine",
-        r"\\.\pipe\podman-machine-default",
-    ];
-
-    for path in pipe_paths {
-        if let Some(body) = fetch_named_pipe_json(path, deadline) {
-            return Some(body);
+    while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match rx.recv_timeout(remaining) {
+            Ok(body) => responses.push(body),
+            Err(
+                std::sync::mpsc::RecvTimeoutError::Timeout
+                | std::sync::mpsc::RecvTimeoutError::Disconnected,
+            ) => {
+                break;
+            }
         }
     }
 
-    None
+    responses
 }
 
 #[cfg(windows)]
@@ -299,11 +353,6 @@ fn fetch_named_pipe_json(path: &str, deadline: std::time::Instant) -> Option<Str
 fn unix_socket_paths(uid: u32, home: Option<PathBuf>) -> Vec<String> {
     let mut socket_paths = Vec::new();
 
-    // Honour DOCKER_HOST when it points at a Unix socket (unix://).
-    if let Some(path) = docker_host_unix_path() {
-        socket_paths.push(path);
-    }
-
     socket_paths.extend([
         "/var/run/docker.sock".to_string(),
         format!("/run/user/{uid}/docker.sock"),
@@ -316,6 +365,16 @@ fn unix_socket_paths(uid: u32, home: Option<PathBuf>) -> Vec<String> {
     }
 
     socket_paths
+}
+
+#[cfg(unix)]
+fn fetch_unix_socket_json(path: &Path) -> Option<String> {
+    use std::os::unix::net::UnixStream;
+
+    let mut stream = UnixStream::connect(path).ok()?;
+    // Best-effort timeout; proceed even if it cannot be set.
+    drop(stream.set_read_timeout(Some(DAEMON_TIMEOUT)));
+    send_http_request(&mut stream)
 }
 
 #[cfg(unix)]
@@ -721,6 +780,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_podman_style_ports_with_empty_host_ip() {
+        let json = r#"[{
+            "Names": ["ensurily-postgres-dev"],
+            "Image": "docker.io/library/postgres:14-alpine",
+            "Ports": [{"host_ip": "", "container_port": 5432, "host_port": 5432, "range": 1, "protocol": "tcp"}]
+        }]"#;
+        let map = parse_containers_json(json);
+
+        let info = map.get(&(None, 5432, Protocol::Tcp)).unwrap();
+        assert_eq!(info.name, "ensurily-postgres-dev");
+        assert_eq!(info.image, "docker.io/library/postgres:14-alpine");
+    }
+
+    #[test]
+    fn parse_podman_style_ports_expand_ranges() {
+        let json = r#"[{
+            "Names": ["ensurily-localstack-dev"],
+            "Image": "docker.io/localstack/localstack:latest",
+            "Ports": [{"host_ip": "", "container_port": 4510, "host_port": 4510, "range": 3, "protocol": "tcp"}]
+        }]"#;
+        let map = parse_containers_json(json);
+
+        assert!(map.contains_key(&(None, 4510, Protocol::Tcp)));
+        assert!(map.contains_key(&(None, 4511, Protocol::Tcp)));
+        assert!(map.contains_key(&(None, 4512, Protocol::Tcp)));
+    }
+
+    #[test]
     fn parse_container_with_empty_name() {
         let json = r#"[{
             "Names": [],
@@ -831,5 +918,35 @@ mod tests {
             paths.contains(&"/home/tester/.docker/run/docker.sock".to_string()),
             "rootless home socket should be probed"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fetch_all_successes_collects_multiple_responses() {
+        let mut responses = fetch_all_successes([1_u8, 2, 3], |candidate| {
+            (candidate != 2).then(|| candidate.to_string())
+        });
+        responses.sort();
+
+        assert_eq!(responses, vec!["1".to_string(), "3".to_string()]);
+    }
+
+    #[test]
+    fn merge_daemon_responses_combines_multiple_runtime_payloads() {
+        let merged = merge_daemon_responses([
+            "[]",
+            r#"[{
+                "Names": ["/backend-postgres-1"],
+                "Image": "postgres:16",
+                "Ports": [{"PublicPort": 5432, "Type": "tcp"}]
+            }]"#,
+        ])
+        .expect("at least one daemon response should produce a map");
+
+        let container = merged
+            .get(&(None, 5432, Protocol::Tcp))
+            .expect("podman/docker ports should survive multi-daemon merging");
+        assert_eq!(container.name, "backend-postgres-1");
+        assert_eq!(container.image, "postgres:16");
     }
 }

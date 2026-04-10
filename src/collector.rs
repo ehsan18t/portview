@@ -8,12 +8,16 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
 use std::ffi::CStr;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+#[cfg(target_os = "linux")]
+use std::fs;
 #[cfg(unix)]
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "linux")]
+use serde::Deserialize;
 #[cfg(target_os = "linux")]
 use std::io::{BufRead, BufReader};
 
@@ -34,6 +38,51 @@ struct UserResolver {
     names_by_pid: HashMap<u32, String>,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct PodmanRootlessResolver {
+    containers_by_netns: Option<HashMap<PathBuf, docker::ContainerInfo>>,
+    containers_by_pid: HashMap<u32, Option<docker::ContainerInfo>>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Deserialize)]
+struct PodmanStorageContainer {
+    id: String,
+    #[serde(default)]
+    names: Vec<String>,
+    metadata: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Deserialize)]
+struct PodmanStorageMetadata {
+    #[serde(rename = "image-name")]
+    image_name: Option<String>,
+    name: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Deserialize)]
+struct PodmanContainerConfig {
+    linux: Option<PodmanLinuxConfig>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Deserialize)]
+struct PodmanLinuxConfig {
+    #[serde(default)]
+    namespaces: Vec<PodmanNamespace>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Deserialize)]
+struct PodmanNamespace {
+    #[serde(rename = "type")]
+    namespace_type: String,
+    path: Option<PathBuf>,
+}
+
 struct CollectContext<'a> {
     sys: &'a System,
     user_resolver: &'a mut UserResolver,
@@ -42,6 +91,8 @@ struct CollectContext<'a> {
     now_epoch: u64,
     project_cache: &'a mut HashMap<PathBuf, Option<PathBuf>>,
     home: Option<&'a Path>,
+    #[cfg(target_os = "linux")]
+    podman_rootless_resolver: &'a mut PodmanRootlessResolver,
 }
 
 /// Collect all open TCP and UDP sockets on the system.
@@ -102,6 +153,8 @@ pub fn collect() -> Result<Vec<PortEntry>> {
         .unwrap_or(0);
 
     let mut project_cache: HashMap<PathBuf, Option<PathBuf>> = HashMap::new();
+    #[cfg(target_os = "linux")]
+    let mut podman_rootless_resolver = PodmanRootlessResolver::default();
 
     // Resolve the home directory once so that every per-process
     // invocation of find_from_dir does not each query the OS environment.
@@ -114,6 +167,8 @@ pub fn collect() -> Result<Vec<PortEntry>> {
         now_epoch,
         project_cache: &mut project_cache,
         home: home.as_deref(),
+        #[cfg(target_os = "linux")]
+        podman_rootless_resolver: &mut podman_rootless_resolver,
     };
 
     let all_entries: Vec<PortEntry> = raw_listeners
@@ -155,12 +210,11 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
     let sysinfo_process = context.sys.process(sysinfo_pid);
     let user = resolve_user(sysinfo_process, l.process.pid, context.user_resolver);
 
-    // Docker container lookup
-    let container = lookup_container(context.container_map, l.socket, proto, &l.process.name);
+    let container = resolve_container(context, l.socket, proto, l.process.pid, &l.process.name);
 
     // Project detection: use container name for Docker ports, otherwise walk cwd.
     // The cache avoids redundant directory walks for processes sharing a cwd.
-    let (project_name, project_root) = container.map_or_else(
+    let (project_name, project_root) = container.as_ref().map_or_else(
         || {
             let cwd = sysinfo_process.and_then(sysinfo::Process::cwd);
             let cmd = sysinfo_process.map_or(&[][..], sysinfo::Process::cmd);
@@ -175,7 +229,7 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
     );
 
     // App/framework detection
-    let app = framework::detect(container, project_root.as_deref(), &l.process.name);
+    let app = framework::detect(container.as_ref(), project_root.as_deref(), &l.process.name);
 
     // Uptime from process start time
     let uptime_secs = sysinfo_process.and_then(|p| {
@@ -198,6 +252,35 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
         project: project_name,
         app,
         uptime_secs,
+    }
+}
+
+fn resolve_container(
+    context: &mut CollectContext<'_>,
+    socket: SocketAddr,
+    proto: Protocol,
+    pid: u32,
+    process_name: &str,
+) -> Option<docker::ContainerInfo> {
+    let socket_match =
+        lookup_container(context.container_map, socket, proto, process_name).cloned();
+
+    #[cfg(target_os = "linux")]
+    {
+        socket_match.or_else(|| {
+            lookup_podman_rootless_container(
+                pid,
+                process_name,
+                context.podman_rootless_resolver,
+                context.home,
+            )
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        socket_match
     }
 }
 
@@ -233,6 +316,205 @@ fn lookup_container<'a>(
     }
 
     candidate
+}
+
+#[cfg(target_os = "linux")]
+fn lookup_podman_rootless_container(
+    pid: u32,
+    process_name: &str,
+    resolver: &mut PodmanRootlessResolver,
+    home: Option<&Path>,
+) -> Option<docker::ContainerInfo> {
+    if !is_podman_rootlessport_process(process_name) {
+        return None;
+    }
+
+    if let Some(container) = resolver.containers_by_pid.get(&pid) {
+        return container.clone();
+    }
+
+    let containers_by_netns = resolver
+        .containers_by_netns
+        .get_or_insert_with(|| load_podman_rootless_containers_by_netns(home));
+    let container =
+        match_container_by_netns_paths(&read_process_netns_paths(pid), containers_by_netns);
+
+    resolver.containers_by_pid.insert(pid, container.clone());
+    container
+}
+
+#[cfg(target_os = "linux")]
+fn load_podman_rootless_containers_by_netns(
+    home: Option<&Path>,
+) -> HashMap<PathBuf, docker::ContainerInfo> {
+    let mut containers = HashMap::new();
+
+    for overlay_root in podman_overlay_container_roots(home) {
+        containers.extend(load_podman_rootless_containers_from_overlay_root(
+            &overlay_root,
+        ));
+    }
+
+    containers
+}
+
+#[cfg(target_os = "linux")]
+fn podman_overlay_container_roots(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME") {
+        push_unique_path(
+            &mut roots,
+            PathBuf::from(xdg_data_home).join("containers/storage/overlay-containers"),
+        );
+    }
+
+    if let Some(home) = home {
+        push_unique_path(
+            &mut roots,
+            home.join(".local/share/containers/storage/overlay-containers"),
+        );
+    }
+
+    push_unique_path(
+        &mut roots,
+        PathBuf::from("/var/lib/containers/storage/overlay-containers"),
+    );
+
+    roots
+}
+
+#[cfg(target_os = "linux")]
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.contains(&path) {
+        paths.push(path);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn load_podman_rootless_containers_from_overlay_root(
+    overlay_root: &Path,
+) -> HashMap<PathBuf, docker::ContainerInfo> {
+    let catalog_path = overlay_root.join("containers.json");
+    let Ok(catalog_json) = fs::read_to_string(catalog_path) else {
+        return HashMap::new();
+    };
+    let Ok(containers) = serde_json::from_str::<Vec<PodmanStorageContainer>>(&catalog_json) else {
+        return HashMap::new();
+    };
+
+    let mut containers_by_netns = HashMap::new();
+    for container in containers {
+        let info = podman_storage_container_info(&container);
+        let config_path = overlay_root
+            .join(&container.id)
+            .join("userdata/config.json");
+        let Some(netns_path) = read_podman_network_namespace_path(&config_path) else {
+            continue;
+        };
+        containers_by_netns.insert(netns_path, info);
+    }
+
+    containers_by_netns
+}
+
+#[cfg(target_os = "linux")]
+fn podman_storage_container_info(container: &PodmanStorageContainer) -> docker::ContainerInfo {
+    let metadata = container
+        .metadata
+        .as_deref()
+        .and_then(parse_podman_storage_metadata);
+    let name = container
+        .names
+        .first()
+        .cloned()
+        .or_else(|| metadata.as_ref().and_then(|value| value.name.clone()))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| short_container_id(&container.id));
+    let image = metadata
+        .and_then(|value| value.image_name)
+        .unwrap_or_default();
+
+    docker::ContainerInfo { name, image }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_podman_storage_metadata(metadata: &str) -> Option<PodmanStorageMetadata> {
+    serde_json::from_str(metadata).ok()
+}
+
+#[cfg(target_os = "linux")]
+fn read_podman_network_namespace_path(config_path: &Path) -> Option<PathBuf> {
+    let config_json = fs::read_to_string(config_path).ok()?;
+    let config = serde_json::from_str::<PodmanContainerConfig>(&config_json).ok()?;
+
+    config.linux?.namespaces.into_iter().find_map(|namespace| {
+        (namespace.namespace_type == "network")
+            .then_some(namespace.path)
+            .flatten()
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn read_process_netns_paths(pid: u32) -> Vec<PathBuf> {
+    let fd_dir = PathBuf::from("/proc").join(pid.to_string()).join("fd");
+    let Ok(entries) = fs::read_dir(fd_dir) else {
+        return Vec::new();
+    };
+
+    let mut netns_paths = HashSet::new();
+    for entry in entries.flatten() {
+        let Ok(target) = fs::read_link(entry.path()) else {
+            continue;
+        };
+        if is_podman_network_namespace_path(&target) {
+            netns_paths.insert(target);
+        }
+    }
+
+    let mut netns_paths: Vec<_> = netns_paths.into_iter().collect();
+    netns_paths.sort();
+    netns_paths
+}
+
+#[cfg(target_os = "linux")]
+fn is_podman_network_namespace_path(path: &Path) -> bool {
+    path.parent().and_then(Path::file_name) == Some(OsStr::new("netns"))
+        && path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("netns-"))
+}
+
+#[cfg(target_os = "linux")]
+fn match_container_by_netns_paths(
+    netns_paths: &[PathBuf],
+    containers_by_netns: &HashMap<PathBuf, docker::ContainerInfo>,
+) -> Option<docker::ContainerInfo> {
+    let mut candidate = None;
+
+    for netns_path in netns_paths {
+        let Some(info) = containers_by_netns.get(netns_path) else {
+            continue;
+        };
+
+        match &candidate {
+            None => candidate = Some(info.clone()),
+            Some(existing) if existing == info => {}
+            Some(_) => return None,
+        }
+    }
+
+    candidate
+}
+
+#[cfg(target_os = "linux")]
+fn is_podman_rootlessport_process(process_name: &str) -> bool {
+    crate::types::strip_windows_exe_suffix(process_name).eq_ignore_ascii_case("rootlessport")
+}
+
+#[cfg(target_os = "linux")]
+fn short_container_id(container_id: &str) -> String {
+    container_id.chars().take(12).collect()
 }
 
 /// Resolve the best-known TCP state for a listener entry.
@@ -799,8 +1081,13 @@ const fn address_preference(address: IpAddr) -> u8 {
 }
 
 fn is_docker_proxy_process(process_name: &str) -> bool {
-    const DOCKER_PROXY_PROCESSES: &[&str] =
-        &["wslrelay", "com.docker.backend", "vpnkit", "docker-proxy"];
+    const DOCKER_PROXY_PROCESSES: &[&str] = &[
+        "wslrelay",
+        "com.docker.backend",
+        "vpnkit",
+        "docker-proxy",
+        "rootlessport",
+    ];
 
     let name = crate::types::strip_windows_exe_suffix(process_name);
     DOCKER_PROXY_PROCESSES
@@ -1251,6 +1538,7 @@ mod tests {
         assert!(is_docker_proxy_process("wslrelay.exe"));
         assert!(is_docker_proxy_process("COM.DOCKER.BACKEND.EXE"));
         assert!(is_docker_proxy_process("vpnkit"));
+        assert!(is_docker_proxy_process("ROOTLESSPORT"));
         assert!(!is_docker_proxy_process("nginx"));
     }
 
@@ -1308,6 +1596,106 @@ mod tests {
             "wslrelay.exe",
         );
         assert_eq!(container.map(|info| info.name.as_str()), Some("postgres"));
+    }
+
+    #[test]
+    fn container_lookup_uses_proxy_fallback_for_rootlessport() {
+        let mut map = HashMap::new();
+        map.insert(
+            (Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)), 6379, Protocol::Tcp),
+            docker::ContainerInfo {
+                name: "redis".to_string(),
+                image: "redis:7-alpine".to_string(),
+            },
+        );
+
+        let container = lookup_container(
+            &map,
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 6379),
+            Protocol::Tcp,
+            "rootlessport",
+        );
+        assert_eq!(container.map(|info| info.name.as_str()), Some("redis"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn load_podman_rootless_containers_from_overlay_root_reads_metadata() {
+        let overlay_root = TempDir::new().unwrap();
+        let container_id = "e603f8ebd438b8405b9b835b9d38cb913ea2479f5b29f8e4308b88e9a92e8c4b";
+        let netns_path = "/run/user/1000/netns/netns-demo";
+
+        fs::create_dir_all(overlay_root.path().join(container_id).join("userdata")).unwrap();
+        fs::write(
+            overlay_root.path().join("containers.json"),
+            format!(
+                r#"[{{
+                    "id": "{container_id}",
+                    "names": ["ensurily-postgres-dev"],
+                    "metadata": "{{\"image-name\":\"docker.io/library/postgres:14-alpine\",\"name\":\"ensurily-postgres-dev\"}}"
+                }}]"#
+            ),
+        )
+        .unwrap();
+        fs::write(
+            overlay_root
+                .path()
+                .join(container_id)
+                .join("userdata/config.json"),
+            format!(r#"{{"linux":{{"namespaces":[{{"type":"network","path":"{netns_path}"}}]}}}}"#),
+        )
+        .unwrap();
+
+        let containers = load_podman_rootless_containers_from_overlay_root(overlay_root.path());
+        let container = containers.get(Path::new(netns_path)).unwrap();
+
+        assert_eq!(container.name, "ensurily-postgres-dev");
+        assert_eq!(container.image, "docker.io/library/postgres:14-alpine");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn match_container_by_netns_paths_returns_unique_match() {
+        let netns_path = PathBuf::from("/run/user/1000/netns/netns-demo");
+        let mut containers = HashMap::new();
+        containers.insert(
+            netns_path.clone(),
+            docker::ContainerInfo {
+                name: "ensurily-redis-dev".to_string(),
+                image: "docker.io/library/redis:7.2-alpine".to_string(),
+            },
+        );
+
+        let container = match_container_by_netns_paths(&[netns_path], &containers).unwrap();
+        assert_eq!(container.name, "ensurily-redis-dev");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn match_container_by_netns_paths_rejects_conflicting_matches() {
+        let first_path = PathBuf::from("/run/user/1000/netns/netns-a");
+        let second_path = PathBuf::from("/run/user/1000/netns/netns-b");
+        let mut containers = HashMap::new();
+        containers.insert(
+            first_path.clone(),
+            docker::ContainerInfo {
+                name: "postgres".to_string(),
+                image: "postgres:16".to_string(),
+            },
+        );
+        containers.insert(
+            second_path.clone(),
+            docker::ContainerInfo {
+                name: "redis".to_string(),
+                image: "redis:7-alpine".to_string(),
+            },
+        );
+
+        let container = match_container_by_netns_paths(&[first_path, second_path], &containers);
+        assert!(
+            container.is_none(),
+            "multiple distinct netns matches should not guess a container"
+        );
     }
 
     #[test]
