@@ -15,6 +15,8 @@ name: CI
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 # Principle of least privilege — CI only reads source, never pushes.
 permissions:
