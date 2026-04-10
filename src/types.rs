@@ -262,4 +262,109 @@ mod tests {
             "days with only hours should not show 0m"
         );
     }
+
+    #[test]
+    fn format_uptime_zero_seconds() {
+        assert_eq!(
+            format_uptime(Some(0)),
+            "< 1m",
+            "zero seconds should show sub-minute label"
+        );
+    }
+
+    #[test]
+    fn format_uptime_just_under_one_minute() {
+        assert_eq!(
+            format_uptime(Some(59)),
+            "< 1m",
+            "59 seconds should still be sub-minute"
+        );
+    }
+
+    #[test]
+    fn format_uptime_exact_one_minute() {
+        assert_eq!(
+            format_uptime(Some(60)),
+            "1m",
+            "exactly 60 seconds should show 1m"
+        );
+    }
+
+    #[test]
+    fn format_uptime_just_under_one_hour() {
+        assert_eq!(
+            format_uptime(Some(3599)),
+            "59m",
+            "3599 seconds should show 59m, not 1h"
+        );
+    }
+
+    #[test]
+    fn format_uptime_exact_one_hour() {
+        assert_eq!(
+            format_uptime(Some(3600)),
+            "1h",
+            "exactly one hour should not show 0m"
+        );
+    }
+
+    #[test]
+    fn strip_exe_empty_string() {
+        assert_eq!(
+            strip_windows_exe_suffix(""),
+            "",
+            "empty string should remain empty"
+        );
+    }
+
+    #[test]
+    fn strip_exe_shorter_than_four_chars() {
+        assert_eq!(
+            strip_windows_exe_suffix("abc"),
+            "abc",
+            "strings shorter than .exe should be unchanged"
+        );
+    }
+
+    #[test]
+    fn strip_exe_exactly_dot_exe() {
+        assert_eq!(
+            strip_windows_exe_suffix(".exe"),
+            "",
+            "bare .exe should strip to empty"
+        );
+    }
+
+    #[test]
+    fn strip_exe_lowercase_suffix() {
+        assert_eq!(strip_windows_exe_suffix("nginx.exe"), "nginx");
+    }
+
+    #[test]
+    fn strip_exe_uppercase_suffix() {
+        assert_eq!(strip_windows_exe_suffix("NGINX.EXE"), "NGINX");
+    }
+
+    #[test]
+    fn strip_exe_mixed_case_suffix() {
+        assert_eq!(strip_windows_exe_suffix("node.Exe"), "node");
+    }
+
+    #[test]
+    fn strip_exe_no_suffix() {
+        assert_eq!(
+            strip_windows_exe_suffix("postgres"),
+            "postgres",
+            "names without .exe should be unchanged"
+        );
+    }
+
+    #[test]
+    fn strip_exe_dot_exe_in_middle() {
+        assert_eq!(
+            strip_windows_exe_suffix("my.executable"),
+            "my.executable",
+            "only trailing .exe should be stripped"
+        );
+    }
 }
