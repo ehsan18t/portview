@@ -49,9 +49,11 @@ fn write_table(
 
     if opts.compact {
         table.load_preset(comfy_table::presets::NOTHING);
-    } else {
+    } else if terminal_supports_utf8_borders() {
         table.load_preset(comfy_table::presets::UTF8_FULL);
         table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+    } else {
+        table.load_preset(comfy_table::presets::ASCII_FULL);
     }
 
     if opts.show_header {
@@ -111,6 +113,32 @@ fn write_json(writer: &mut impl Write, entries: &[PortEntry]) -> Result<()> {
         serde_json::to_string_pretty(entries).context("failed to serialize entries to JSON")?;
     writeln!(writer, "{json}").context("failed to write JSON to stdout")?;
     Ok(())
+}
+
+/// Check whether the terminal can display UTF-8 box-drawing characters.
+///
+/// On Windows, returns `true` only when the console output code page is
+/// 65001 (UTF-8). On all other platforms, returns `true` unconditionally
+/// because virtually all modern Unix terminals support UTF-8.
+#[cfg(windows)]
+fn terminal_supports_utf8_borders() -> bool {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetConsoleOutputCP() -> u32;
+    }
+
+    const UTF8_CODE_PAGE: u32 = 65001;
+    // Safety: `GetConsoleOutputCP` is a simple syscall with no preconditions.
+    (unsafe { GetConsoleOutputCP() }) == UTF8_CODE_PAGE
+}
+
+/// Check whether the terminal can display UTF-8 box-drawing characters.
+///
+/// On non-Windows platforms, returns `true` unconditionally because
+/// virtually all modern Unix terminals support UTF-8.
+#[cfg(not(windows))]
+const fn terminal_supports_utf8_borders() -> bool {
+    true
 }
 
 /// Truncate a process name to [`MAX_PROCESS_NAME_LEN`] characters with an
