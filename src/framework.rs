@@ -4,6 +4,7 @@
 //! Docker image name, config file detection, and process name matching.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::Path;
 
@@ -16,8 +17,12 @@ enum ConfigMatchKind {
     Prefix,
 }
 
+/// Cached listing of file names in a project root directory.
+///
+/// Uses a `HashSet` so that exact-match lookups (the hot path for
+/// config-file detection) are O(1) instead of O(n).
 struct ProjectFiles {
-    names: Vec<String>,
+    names: HashSet<String>,
 }
 
 impl ProjectFiles {
@@ -32,7 +37,7 @@ impl ProjectFiles {
     }
 
     fn contains_exact(&self, target: &str) -> bool {
-        self.names.iter().any(|name| name == target)
+        self.names.contains(target)
     }
 
     fn contains_prefix(&self, prefix: &str) -> bool {
