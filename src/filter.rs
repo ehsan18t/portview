@@ -3,7 +3,6 @@
 //! Applies user-specified CLI filters to the collected port entries before
 //! display.
 
-use crate::framework;
 use crate::types::{PortEntry, Protocol, State};
 
 /// Options controlling which entries pass through the filter.
@@ -24,15 +23,16 @@ pub struct FilterOptions {
 /// Check whether a port entry is considered developer-relevant.
 ///
 /// An entry is relevant if it has a detected project, app label, or a
-/// process name recognized by [`framework::detect_from_process`].
-/// The framework module is the single source of truth for known process
-/// names, eliminating the need for a duplicate list here.
-fn is_relevant(entry: &PortEntry) -> bool {
-    if entry.project.is_some() || entry.app.is_some() {
-        return true;
-    }
-
-    framework::detect_from_process(&entry.process).is_some()
+/// process name recognized by the framework engine (which already ran
+/// during collection).
+///
+/// Because [`crate::collector::build_entry`] calls
+/// `framework::detect` -- which includes a process-name fallback --
+/// the `app` field is already populated when the process is known.
+/// Checking `project` or `app` alone is sufficient; a redundant
+/// re-scan of the process map is not needed.
+const fn is_relevant(entry: &PortEntry) -> bool {
+    entry.project.is_some() || entry.app.is_some()
 }
 
 /// Apply the given filter options to a collection of entries.
@@ -291,11 +291,17 @@ mod tests {
     }
 
     #[test]
-    fn relevance_filter_keeps_known_process() {
+    fn relevance_filter_keeps_entry_with_app_from_known_process() {
         let mut entry = make_entry(3000, Protocol::Tcp, State::Listen);
         entry.process = "node".to_string();
+        // The collector populates `app` via framework::detect for known processes.
+        entry.app = Some("Node.js");
         let result = apply(vec![entry], &default_filter());
-        assert_eq!(result.len(), 1, "known process 'node' should pass");
+        assert_eq!(
+            result.len(),
+            1,
+            "entry with app label from node should pass"
+        );
     }
 
     #[test]
@@ -326,18 +332,22 @@ mod tests {
     }
 
     #[test]
-    fn relevance_filter_windows_exe_suffix() {
+    fn relevance_filter_recognizes_app_from_exe_suffix() {
         let mut entry = make_entry(80, Protocol::Tcp, State::Listen);
         entry.process = "nginx.exe".to_string();
+        // The collector populates `app` via framework::detect for known processes.
+        entry.app = Some("Nginx");
         let result = apply(vec![entry], &default_filter());
-        assert_eq!(result.len(), 1, "nginx.exe should be recognized");
+        assert_eq!(result.len(), 1, "entry with app from nginx.exe should pass");
     }
 
     #[test]
-    fn relevance_filter_case_insensitive() {
+    fn relevance_filter_recognizes_app_from_capitalized_name() {
         let mut entry = make_entry(3000, Protocol::Tcp, State::Listen);
         entry.process = "Python".to_string();
+        // The collector populates `app` via framework::detect for known processes.
+        entry.app = Some("Python");
         let result = apply(vec![entry], &default_filter());
-        assert_eq!(result.len(), 1, "capitalized 'Python' should match");
+        assert_eq!(result.len(), 1, "entry with app from Python should pass");
     }
 }
