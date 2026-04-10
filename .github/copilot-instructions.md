@@ -8,14 +8,14 @@
 
 ## 1 · Project Identity
 
-| Field      | Value                                                 |
-| ---------- | ----------------------------------------------------- |
-| Language   | Rust (edition **2024**)                               |
-| Platform   | Cross-platform (Linux x86-64/aarch64, Windows x86-64) |
-| Binary     | Single CLI executable                                 |
-| License    | MIT                                                   |
-| Min Rust   | latest stable (currently 1.93+)                       |
-| Repository | `https://github.com/ehsan18t/portview`                |
+| Field      | Value                                         |
+| ---------- | --------------------------------------------- |
+| Language   | Rust (edition **2024**)                       |
+| Platform   | Cross-platform (Linux x86-64, Windows x86-64) |
+| Binary     | Single CLI executable                         |
+| License    | MIT                                           |
+| Min Rust   | latest stable (currently 1.93+)               |
+| Repository | `https://github.com/ehsan18t/portview`        |
 
 ---
 

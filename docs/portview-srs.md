@@ -56,7 +56,6 @@ portview is a single-binary CLI tool written in Rust. When executed, it collects
 | Platform             | Architecture | Status    |
 | -------------------- | ------------ | --------- |
 | Linux (kernel 4.x+)  | x86_64       | Supported |
-| Linux (kernel 4.x+)  | aarch64      | Supported |
 | Windows 10 / 11      | x86_64       | Supported |
 | Windows Server 2019+ | x86_64       | Supported |
 
@@ -171,7 +170,7 @@ portview must run without requiring elevated privileges. However, certain socket
 
 ### 3.5 Distribution
 
-- The project must ship pre-built binaries for Linux x86_64, Linux aarch64, and Windows x86_64 via GitHub Releases
+- The project must ship pre-built binaries for Linux x86_64 and Windows x86_64 via GitHub Releases
 - The project must be installable via `cargo install` for users who prefer to build from source
 
 ---
@@ -195,8 +194,8 @@ The application is written entirely in Rust on the stable toolchain. The minimum
 ### 4.3 Build and Toolchain
 
 - **Build system:** Cargo (standard Rust build tool)
-- **Cross-compilation:** cargo-cross for producing Linux aarch64 and Windows x86_64 binaries from a single build machine
-- **CI/CD:** GitHub Actions with matrix builds across all three target triples
+- **Target builds:** GitHub Actions native matrix builds for Linux x86_64 and Windows x86_64
+- **CI/CD:** GitHub Actions with matrix builds across both supported target triples
 - **Release artifacts:** Uploaded to GitHub Releases as .tar.gz for Linux and .exe for Windows
 
 ### 4.4 Project Structure

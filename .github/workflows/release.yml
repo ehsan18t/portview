@@ -1,5 +1,5 @@
 # portview - Release Pipeline
-# Manually triggered workflow that builds release binaries for all platforms,
+# Manually triggered workflow that builds release binaries for supported platforms,
 # packages them as .tar.gz / .exe / .deb / .rpm, and creates a draft release.
 #
 # Trigger: Actions tab > Release > Run workflow > enter version tag (e.g. v0.1.0)
@@ -33,11 +33,6 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
             asset_suffix: x86_64
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            archive: tar.gz
-            asset_suffix: aarch64
-            cross: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: exe
@@ -52,18 +47,9 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
-      # Linux aarch64 cross-compilation toolchain
-      - name: Install cross-compilation tools
-        if: matrix.cross
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
       # Build release binary
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
       # Package as tar.gz (Linux)
       - name: Package tar.gz
@@ -97,14 +83,6 @@ jobs:
           cargo install cargo-generate-rpm --locked
           cargo generate-rpm --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/generate-rpm/*.rpm ./portview-${{ inputs.tag }}-x86_64.rpm
-
-      # Build .deb package (Linux aarch64)
-      - name: Build .deb package (aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          cargo install cargo-deb --locked
-          cargo deb --no-build --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/debian/*.deb ./portview-${{ inputs.tag }}-arm64.deb
 
       - name: Upload artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
