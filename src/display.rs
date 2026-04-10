@@ -3,7 +3,7 @@
 //! Renders `Vec<PortEntry>` as either an aligned terminal table or a JSON
 //! array to stdout.
 
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 
 use anyhow::{Context, Result};
 
@@ -35,6 +35,36 @@ const FULL_COLUMNS: &[Column] = &[
     Column::App,
     Column::Uptime,
 ];
+
+const QUICK_ACTIONS: &[ActionItem] = &[
+    ActionItem {
+        name: "Filter one port",
+        flag: "-p 3000",
+        detail: "focus a single service",
+    },
+    ActionItem {
+        name: "Show everything",
+        flag: "-a",
+        detail: "include every open port",
+    },
+    ActionItem {
+        name: "More detail",
+        flag: "--full",
+        detail: "add state and user",
+    },
+    ActionItem {
+        name: "Export JSON",
+        flag: "--json",
+        detail: "script-friendly output",
+    },
+    ActionItem {
+        name: "Help",
+        flag: "-h",
+        detail: "list every flag",
+    },
+];
+
+const WIDE_TIPS_THRESHOLD: usize = 72;
 
 /// Options controlling how entries are rendered.
 pub struct DisplayOptions {
@@ -81,6 +111,18 @@ struct BorderStyle {
     bottom_right: char,
 }
 
+struct ActionItem {
+    name: &'static str,
+    flag: &'static str,
+    detail: &'static str,
+}
+
+#[derive(Clone, Copy)]
+enum TerminalStream {
+    Stdout,
+    Stderr,
+}
+
 /// Print the entries as a table to stdout.
 ///
 /// Table style and column selection are controlled by `opts`.
@@ -107,9 +149,23 @@ fn write_table(
     entries: &[PortEntry],
     opts: &DisplayOptions,
 ) -> Result<()> {
+    write_table_with_width(writer, entries, opts, stdout_terminal_width())
+}
+
+fn write_table_with_width(
+    writer: &mut impl Write,
+    entries: &[PortEntry],
+    opts: &DisplayOptions,
+    terminal_width: Option<usize>,
+) -> Result<()> {
     let columns = table_columns(opts.full);
     let rows = build_rows(entries, columns);
-    let widths = measure_column_widths(columns, &rows, opts.show_header);
+    let widths = fit_table_widths(
+        columns,
+        &measure_column_widths(columns, &rows, opts.show_header),
+        opts.compact,
+        terminal_width,
+    );
 
     if opts.compact {
         write_compact_table(writer, columns, &rows, &widths, opts.show_header)?;
@@ -134,18 +190,18 @@ fn write_json(writer: &mut impl Write, entries: &[PortEntry]) -> Result<()> {
 }
 
 fn write_tips(writer: &mut impl Write) -> Result<()> {
+    write_tips_with_width(writer, stderr_terminal_width())
+}
+
+fn write_tips_with_width(writer: &mut impl Write, terminal_width: Option<usize>) -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
-    let title = format!("portview v{version}");
-    let lines = [
-        render_tip_row(&[("filter", "-p PORT"), ("all", "-a"), ("details", "--full")]),
-        render_tip_row(&[("json", "--json"), ("help", "-h")]),
-    ];
+    let title = format!("Quick Actions  portview v{version}");
     let style = if terminal_supports_utf8_borders() {
         utf8_border_style()
     } else {
         ascii_border_style()
     };
-    let tip_box = render_tip_box(&title, &lines, style);
+    let tip_box = render_tips_panel(&title, terminal_width, style);
 
     write!(writer, "\n{tip_box}\n").context("failed to write tips to stderr")?;
     Ok(())
@@ -187,6 +243,80 @@ fn measure_column_widths(
             header_width.max(row_width)
         })
         .collect()
+}
+
+fn fit_table_widths(
+    columns: &[Column],
+    natural_widths: &[usize],
+    compact: bool,
+    terminal_width: Option<usize>,
+) -> Vec<usize> {
+    let Some(available_width) = terminal_width else {
+        return natural_widths.to_vec();
+    };
+
+    let mut widths = natural_widths.to_vec();
+    let preferred_min_widths = columns
+        .iter()
+        .map(|column| column.preferred_min_width())
+        .collect::<Vec<_>>();
+
+    shrink_widths_to_budget(
+        &mut widths,
+        columns,
+        &preferred_min_widths,
+        compact,
+        available_width,
+    );
+
+    if rendered_table_width(&widths, compact) > available_width {
+        let hard_min_widths = vec![1; columns.len()];
+        shrink_widths_to_budget(
+            &mut widths,
+            columns,
+            &hard_min_widths,
+            compact,
+            available_width,
+        );
+    }
+
+    widths
+}
+
+fn shrink_widths_to_budget(
+    widths: &mut [usize],
+    columns: &[Column],
+    min_widths: &[usize],
+    compact: bool,
+    available_width: usize,
+) {
+    let mut overage = rendered_table_width(widths, compact).saturating_sub(available_width);
+    if overage == 0 {
+        return;
+    }
+
+    let mut column_indexes = (0..columns.len()).collect::<Vec<_>>();
+    column_indexes.sort_by_key(|index| columns[*index].shrink_priority());
+
+    for index in column_indexes {
+        if overage == 0 {
+            break;
+        }
+
+        let reducible = widths[index].saturating_sub(min_widths[index]);
+        let reduction = reducible.min(overage);
+        widths[index] -= reduction;
+        overage -= reduction;
+    }
+}
+
+fn rendered_table_width(widths: &[usize], compact: bool) -> usize {
+    let content_width = widths.iter().sum::<usize>();
+    if compact {
+        content_width + widths.len().saturating_sub(1) * 2
+    } else {
+        content_width + widths.len() * 3 + 1
+    }
 }
 
 fn write_bordered_table(
@@ -284,7 +414,9 @@ fn render_header_row(columns: &[Column], widths: &[usize], vertical: char) -> St
     let cells = columns
         .iter()
         .zip(widths)
-        .map(|(column, width)| format_cell(column.heading(), *width, Alignment::Left))
+        .map(|(column, width)| {
+            format_cell(column.heading_for_width(*width), *width, Alignment::Left)
+        })
         .collect::<Vec<_>>()
         .join(&separator);
 
@@ -323,7 +455,8 @@ fn render_compact_row(row: &[String], columns: &[Column], widths: &[usize]) -> S
 }
 
 fn format_cell(value: &str, width: usize, alignment: Alignment) -> String {
-    format!(" {} ", pad_value(value, width, alignment))
+    let clipped = truncate_to_width(value, width);
+    format!(" {} ", pad_value(&clipped, width, alignment))
 }
 
 fn pad_value(value: &str, width: usize, alignment: Alignment) -> String {
@@ -335,46 +468,227 @@ fn pad_value(value: &str, width: usize, alignment: Alignment) -> String {
     }
 }
 
-fn render_tip_row(items: &[(&str, &str)]) -> String {
-    items
-        .iter()
-        .map(|(label, value)| format!("{label:<7} {value}"))
-        .collect::<Vec<_>>()
-        .join("   ")
+fn truncate_to_width(value: &str, width: usize) -> String {
+    if display_width(value) <= width {
+        return value.to_string();
+    }
+
+    if width == 0 {
+        return String::new();
+    }
+
+    if width == 1 {
+        return "…".to_string();
+    }
+
+    let mut truncated = value.chars().take(width - 1).collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
-fn render_tip_box(title: &str, lines: &[String], style: BorderStyle) -> String {
-    let title = format!(" {title} ");
-    let content_width = lines
+fn render_tips_panel(title: &str, terminal_width: Option<usize>, style: BorderStyle) -> String {
+    if terminal_width.unwrap_or(usize::MAX) >= WIDE_TIPS_THRESHOLD {
+        render_wide_tips_panel(title, terminal_width, style)
+    } else {
+        render_narrow_tips_panel(title, terminal_width, style)
+    }
+}
+
+fn render_wide_tips_panel(
+    title: &str,
+    terminal_width: Option<usize>,
+    style: BorderStyle,
+) -> String {
+    let action_width = QUICK_ACTIONS
         .iter()
-        .map(String::as_str)
-        .map(display_width)
+        .map(|action| display_width(action.name))
         .max()
-        .unwrap_or_default()
-        .max(display_width(&title).saturating_sub(2));
-    let top_fill = style
+        .unwrap_or(6)
+        .max(display_width("ACTION"));
+    let flag_width = QUICK_ACTIONS
+        .iter()
+        .map(|action| display_width(action.flag))
+        .max()
+        .unwrap_or(4)
+        .max(display_width("FLAG"));
+    let detail_width = QUICK_ACTIONS
+        .iter()
+        .map(|action| display_width(action.detail))
+        .max()
+        .unwrap_or(12)
+        .max(display_width("WHAT IT DOES"));
+    let natural_widths = [action_width, flag_width, detail_width];
+    let widths = fit_action_widths(&natural_widths, terminal_width);
+    let total_width = rendered_table_width(&widths, false);
+    let mut lines = vec![render_titled_top_border(title, total_width, style)];
+
+    lines.push(render_action_header(&widths, style.vertical));
+    lines.push(render_border_line(
+        &widths,
+        style.middle_left,
+        style.middle_join,
+        style.middle_right,
+        style.horizontal,
+    ));
+    lines.extend(
+        QUICK_ACTIONS
+            .iter()
+            .map(|action| render_action_row(action, &widths, style.vertical)),
+    );
+    lines.push(render_border_line(
+        &widths,
+        style.bottom_left,
+        style.bottom_join,
+        style.bottom_right,
+        style.horizontal,
+    ));
+
+    lines.join("\n")
+}
+
+fn render_narrow_tips_panel(
+    title: &str,
+    terminal_width: Option<usize>,
+    style: BorderStyle,
+) -> String {
+    let inner_width = tip_inner_width(terminal_width)
+        .max(display_width(title))
+        .max(24);
+    let full_width = inner_width + 2;
+    let mut lines = vec![render_titled_top_border(title, full_width, style)];
+
+    for (index, action) in QUICK_ACTIONS.iter().enumerate() {
+        lines.push(render_panel_line(
+            &format!("{}  {}", action.name, action.flag),
+            inner_width,
+            style.vertical,
+        ));
+        lines.push(render_panel_line(
+            action.detail,
+            inner_width,
+            style.vertical,
+        ));
+
+        if index + 1 != QUICK_ACTIONS.len() {
+            lines.push(render_full_width_rule(inner_width, style));
+        }
+    }
+
+    lines.push(render_panel_bottom_border(inner_width, style));
+    lines.join("\n")
+}
+
+fn fit_action_widths(natural_widths: &[usize; 3], terminal_width: Option<usize>) -> [usize; 3] {
+    let Some(available_width) = terminal_width else {
+        return *natural_widths;
+    };
+
+    let mut widths = *natural_widths;
+    let min_widths = [10, 4, 14];
+    let hard_min_widths = [6, 2, 8];
+
+    shrink_action_widths_to_budget(&mut widths, &min_widths, available_width);
+    if rendered_table_width(&widths, false) > available_width {
+        shrink_action_widths_to_budget(&mut widths, &hard_min_widths, available_width);
+    }
+
+    widths
+}
+
+fn shrink_action_widths_to_budget(
+    widths: &mut [usize; 3],
+    min_widths: &[usize; 3],
+    available_width: usize,
+) {
+    let mut overage = rendered_table_width(widths, false).saturating_sub(available_width);
+    if overage == 0 {
+        return;
+    }
+
+    for index in [2, 0, 1] {
+        if overage == 0 {
+            break;
+        }
+
+        let reducible = widths[index].saturating_sub(min_widths[index]);
+        let reduction = reducible.min(overage);
+        widths[index] -= reduction;
+        overage -= reduction;
+    }
+}
+
+fn render_titled_top_border(title: &str, total_width: usize, style: BorderStyle) -> String {
+    let inner_width = total_width.saturating_sub(2);
+    let title = format!(" {} ", truncate_to_width(title, inner_width));
+    let fill = style
         .horizontal
         .to_string()
-        .repeat(content_width + 2 - display_width(&title));
-    let bottom_fill = style.horizontal.to_string().repeat(content_width + 2);
-    let mut rendered = Vec::with_capacity(lines.len() + 2);
+        .repeat(inner_width.saturating_sub(display_width(&title)));
 
-    rendered.push(format!(
-        "{}{}{top_fill}{}",
-        style.top_left, title, style.top_right
-    ));
+    format!("{}{}{fill}{}", style.top_left, title, style.top_right)
+}
 
-    rendered.extend(lines.iter().map(|line| {
-        let padding = " ".repeat(content_width.saturating_sub(display_width(line)));
-        format!("{} {line}{padding} {}", style.vertical, style.vertical)
-    }));
+fn render_action_header(widths: &[usize; 3], vertical: char) -> String {
+    let separator = vertical.to_string();
+    let cells = [
+        format_cell("ACTION", widths[0], Alignment::Left),
+        format_cell("FLAG", widths[1], Alignment::Left),
+        format_cell("WHAT IT DOES", widths[2], Alignment::Left),
+    ]
+    .join(&separator);
 
-    rendered.push(format!(
+    format!("{vertical}{cells}{vertical}")
+}
+
+fn render_action_row(action: &ActionItem, widths: &[usize; 3], vertical: char) -> String {
+    let separator = vertical.to_string();
+    let cells = [
+        format_cell(action.name, widths[0], Alignment::Left),
+        format_cell(action.flag, widths[1], Alignment::Left),
+        format_cell(action.detail, widths[2], Alignment::Left),
+    ]
+    .join(&separator);
+
+    format!("{vertical}{cells}{vertical}")
+}
+
+fn tip_inner_width(terminal_width: Option<usize>) -> usize {
+    terminal_width.map_or_else(
+        || {
+            QUICK_ACTIONS
+                .iter()
+                .flat_map(|action| [action.name, action.detail])
+                .map(display_width)
+                .max()
+                .unwrap_or(24)
+                .max(24)
+        },
+        |width| width.saturating_sub(2),
+    )
+}
+
+fn render_panel_line(value: &str, inner_width: usize, vertical: char) -> String {
+    let clipped = truncate_to_width(value, inner_width);
+    let padding = " ".repeat(inner_width.saturating_sub(display_width(&clipped)));
+    format!("{vertical}{clipped}{padding}{vertical}")
+}
+
+fn render_full_width_rule(inner_width: usize, style: BorderStyle) -> String {
+    format!(
         "{}{}{}",
-        style.bottom_left, bottom_fill, style.bottom_right
-    ));
+        style.middle_left,
+        style.horizontal.to_string().repeat(inner_width),
+        style.middle_right
+    )
+}
 
-    rendered.join("\n")
+fn render_panel_bottom_border(inner_width: usize, style: BorderStyle) -> String {
+    format!(
+        "{}{}{}",
+        style.bottom_left,
+        style.horizontal.to_string().repeat(inner_width),
+        style.bottom_right
+    )
 }
 
 fn display_width(value: &str) -> usize {
@@ -414,6 +728,31 @@ const fn ascii_border_style() -> BorderStyle {
 }
 
 impl Column {
+    const fn preferred_min_width(self) -> usize {
+        match self {
+            Self::Port | Self::User => 4,
+            Self::Proto | Self::State | Self::Pid => 5,
+            Self::Address | Self::Process | Self::Project => 7,
+            Self::App => 3,
+            Self::Uptime => 6,
+        }
+    }
+
+    const fn shrink_priority(self) -> u8 {
+        match self {
+            Self::Project => 0,
+            Self::Process => 1,
+            Self::Address => 2,
+            Self::User => 3,
+            Self::App => 4,
+            Self::State => 5,
+            Self::Uptime => 6,
+            Self::Proto => 7,
+            Self::Pid => 8,
+            Self::Port => 9,
+        }
+    }
+
     const fn heading(self) -> &'static str {
         match self {
             Self::Port => "PORT",
@@ -426,6 +765,18 @@ impl Column {
             Self::Project => "PROJECT",
             Self::App => "APP",
             Self::Uptime => "UPTIME",
+        }
+    }
+
+    const fn heading_for_width(self, width: usize) -> &'static str {
+        match self {
+            Self::Address if width < 7 => "ADDR",
+            Self::Process if width < 7 => "PROC",
+            Self::Project if width < 7 => "PROJ",
+            Self::Uptime if width < 6 => "UP",
+            Self::State if width < 5 => "ST",
+            Self::User if width < 4 => "USR",
+            _ => self.heading(),
         }
     }
 
@@ -457,6 +808,109 @@ impl Column {
             Self::Uptime => format_uptime(entry.uptime_secs),
         }
     }
+}
+
+fn stdout_terminal_width() -> Option<usize> {
+    terminal_width(TerminalStream::Stdout)
+}
+
+fn stderr_terminal_width() -> Option<usize> {
+    terminal_width(TerminalStream::Stderr)
+}
+
+fn terminal_width(stream: TerminalStream) -> Option<usize> {
+    env_terminal_width().or_else(|| platform_terminal_width(stream))
+}
+
+fn env_terminal_width() -> Option<usize> {
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|width| *width > 0)
+}
+
+#[cfg(unix)]
+fn platform_terminal_width(stream: TerminalStream) -> Option<usize> {
+    let fd = match stream {
+        TerminalStream::Stdout if io::stdout().is_terminal() => libc::STDOUT_FILENO,
+        TerminalStream::Stderr if io::stderr().is_terminal() => libc::STDERR_FILENO,
+        TerminalStream::Stdout | TerminalStream::Stderr => return None,
+    };
+
+    let mut size = std::mem::MaybeUninit::<libc::winsize>::zeroed();
+    let result = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, size.as_mut_ptr()) };
+    if result != 0 {
+        return None;
+    }
+
+    let size = unsafe { size.assume_init() };
+    let width = usize::from(size.ws_col);
+    (width > 0).then_some(width)
+}
+
+#[cfg(windows)]
+fn platform_terminal_width(stream: TerminalStream) -> Option<usize> {
+    #[repr(C)]
+    struct Coord {
+        x: i16,
+        y: i16,
+    }
+
+    #[repr(C)]
+    struct SmallRect {
+        left: i16,
+        top: i16,
+        right: i16,
+        bottom: i16,
+    }
+
+    #[repr(C)]
+    struct ConsoleScreenBufferInfo {
+        size: Coord,
+        cursor_position: Coord,
+        attributes: u16,
+        window: SmallRect,
+        maximum_window_size: Coord,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(handle: i32) -> *mut std::ffi::c_void;
+        fn GetConsoleScreenBufferInfo(
+            console_output: *mut std::ffi::c_void,
+            console_screen_buffer_info: *mut ConsoleScreenBufferInfo,
+        ) -> i32;
+    }
+
+    const INVALID_HANDLE_VALUE: isize = -1;
+    const STD_OUTPUT_HANDLE: i32 = -11;
+    const STD_ERROR_HANDLE: i32 = -12;
+
+    let handle_id = match stream {
+        TerminalStream::Stdout if io::stdout().is_terminal() => STD_OUTPUT_HANDLE,
+        TerminalStream::Stderr if io::stderr().is_terminal() => STD_ERROR_HANDLE,
+        TerminalStream::Stdout | TerminalStream::Stderr => return None,
+    };
+
+    let handle = unsafe { GetStdHandle(handle_id) };
+    if handle.is_null() || handle as isize == INVALID_HANDLE_VALUE {
+        return None;
+    }
+
+    let mut info = std::mem::MaybeUninit::<ConsoleScreenBufferInfo>::zeroed();
+    let ok = unsafe { GetConsoleScreenBufferInfo(handle, info.as_mut_ptr()) };
+    if ok == 0 {
+        return None;
+    }
+
+    let info = unsafe { info.assume_init() };
+    let width = i32::from(info.window.right) - i32::from(info.window.left) + 1;
+    usize::try_from(width).ok().filter(|value| *value > 0)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn platform_terminal_width(_stream: TerminalStream) -> Option<usize> {
+    None
 }
 
 /// Check whether the terminal can display UTF-8 box-drawing characters.
@@ -766,30 +1220,89 @@ mod tests {
     }
 
     #[test]
+    fn write_table_fits_within_requested_terminal_width() {
+        let mut entry = sample_entry();
+        entry.project = Some("ms-python.vscode-pylance-2026.2.1".to_string());
+        let entries = vec![entry];
+        let opts = DisplayOptions {
+            show_header: true,
+            full: false,
+            compact: false,
+        };
+        let mut buffer = Vec::new();
+
+        write_table_with_width(&mut buffer, &entries, &opts, Some(60))
+            .expect("write_table_with_width should succeed");
+
+        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        for line in output.lines() {
+            assert!(
+                display_width(line) <= 60,
+                "rendered table line should fit the requested width: {line}"
+            );
+        }
+        assert!(
+            output.contains("…"),
+            "narrow table output should truncate oversized cells"
+        );
+    }
+
+    #[test]
     fn write_tips_renders_shortcut_box() {
         let mut buffer = Vec::new();
         write_tips(&mut buffer).expect("write_tips should succeed");
         let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
 
         assert!(
+            output.contains("Quick Actions"),
+            "tips should include the quick actions title"
+        );
+        assert!(
             output.contains("portview v"),
             "tips should include the version title"
         );
         assert!(
-            output.contains("filter  -p PORT"),
-            "tips should include the port filter shortcut"
+            output.contains("Filter one port"),
+            "tips should include the filter action"
         );
         assert!(
-            output.contains("details --full"),
-            "tips should include the details shortcut"
+            output.contains("-p 3000"),
+            "tips should include the filter example flag"
         );
         assert!(
-            output.contains("json    --json"),
-            "tips should include the JSON shortcut"
+            output.contains("focus a single service"),
+            "tips should include a human-readable description"
         );
         assert!(
-            output.contains("help    -h"),
+            output.contains("script-friendly output"),
+            "tips should include the JSON description"
+        );
+        assert!(
+            output.contains("list every flag"),
             "tips should include the help shortcut"
+        );
+    }
+
+    #[test]
+    fn write_tips_narrow_layout_stays_within_width() {
+        let mut buffer = Vec::new();
+
+        write_tips_with_width(&mut buffer, Some(48)).expect("write_tips_with_width should succeed");
+
+        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        for line in output.lines().filter(|line| !line.is_empty()) {
+            assert!(
+                display_width(line) <= 48,
+                "tip panel line should fit the requested width: {line}"
+            );
+        }
+        assert!(
+            output.contains("Filter one port"),
+            "narrow tip layout should still include the action label"
+        );
+        assert!(
+            output.contains("focus a single service"),
+            "narrow tip layout should still include the action description"
         );
     }
 }
