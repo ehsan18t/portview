@@ -60,6 +60,11 @@ pub type ContainerPortMap = HashMap<(Option<IpAddr>, u16, Protocol), ContainerIn
 /// covers both platforms uniformly.
 const DAEMON_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// Raw HTTP/1.0 request sent to the Docker/Podman daemon to list running
+/// containers. The API version prefix is intentionally omitted so the daemon
+/// uses its own default, avoiding 400 errors on older engines.
+const CONTAINERS_HTTP_REQUEST: &[u8] = b"GET /containers/json HTTP/1.0\r\nHost: localhost\r\n\r\n";
+
 #[cfg(windows)]
 type RawHandle = *mut c_void;
 
@@ -294,12 +299,7 @@ fn unix_socket_paths(uid: u32, home: Option<PathBuf>) -> Vec<String> {
 fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Option<String> {
     use std::io::Read as _;
 
-    // Omit the API version prefix so the daemon uses its own default version.
-    // Hardcoding e.g. `/v1.45/` would cause a 400 on older daemons whose max
-    // API version is lower than the requested one.
-    stream
-        .write_all(b"GET /containers/json HTTP/1.0\r\nHost: localhost\r\n\r\n")
-        .ok()?;
+    stream.write_all(CONTAINERS_HTTP_REQUEST).ok()?;
 
     let mut reader = BufReader::new(stream);
 
@@ -337,9 +337,7 @@ fn send_http_request_windows(
 ) -> Option<String> {
     use std::io::{Read as _, Write as _};
 
-    stream
-        .write_all(b"GET /containers/json HTTP/1.0\r\nHost: localhost\r\n\r\n")
-        .ok()?;
+    stream.write_all(CONTAINERS_HTTP_REQUEST).ok()?;
 
     let mut response = Vec::new();
     let mut chunk = [0_u8; 8192];
