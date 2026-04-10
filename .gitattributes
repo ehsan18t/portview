@@ -30,6 +30,9 @@ LICENSE     text eol=lf
 *.ps1       text eol=crlf
 
 # ── Unix shell scripts & git hooks (LF only) ─────────────────────────────────
+# Git stores the executable bit in tree metadata, not in attributes. Keep
+# these paths LF-normalized here and track them as 100755 in the index.
+*.sh                text eol=lf
 hooks/commit-msg    text eol=lf
 hooks/pre-commit    text eol=lf
 hooks/pre-push      text eol=lf
