@@ -843,24 +843,19 @@ fn collapse_docker_proxy_clusters(entries: Vec<PortEntry>) -> Vec<PortEntry> {
     result
 }
 
-type ProxyClusterKey = (
-    u16,
-    Protocol,
-    State,
-    Option<String>,
-    Option<crate::types::AppLabel>,
-);
+/// Key for clustering Docker proxy entries.
+///
+/// Within a given (port, protocol, state) group, all proxy entries
+/// originate from the same container mapping, so project and app
+/// labels are always identical and do not need to be part of the key.
+type ProxyClusterKey = (u16, Protocol, State);
 
 fn docker_proxy_cluster_key(entry: &PortEntry) -> Option<ProxyClusterKey> {
-    (is_docker_proxy_process(&entry.process) && has_docker_enrichment(entry)).then(|| {
-        (
-            entry.port,
-            entry.proto,
-            entry.state,
-            entry.project.clone(),
-            entry.app.clone(),
-        )
-    })
+    (is_docker_proxy_process(&entry.process) && has_docker_enrichment(entry)).then_some((
+        entry.port,
+        entry.proto,
+        entry.state,
+    ))
 }
 
 fn deduplicate_group(entries: Vec<PortEntry>) -> Vec<PortEntry> {
