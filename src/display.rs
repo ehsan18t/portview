@@ -804,7 +804,7 @@ impl Column {
             Self::Pid => entry.pid.to_string(),
             Self::User => entry.user.clone(),
             Self::Project => entry.project.as_deref().unwrap_or("-").to_string(),
-            Self::App => entry.app.unwrap_or("-").to_string(),
+            Self::App => entry.app.as_deref().unwrap_or("-").to_string(),
             Self::Uptime => format_uptime(entry.uptime_secs),
         }
     }
@@ -1042,7 +1042,7 @@ mod tests {
             process: "node".to_string(),
             user: "user".to_string(),
             project: Some("my-app".to_string()),
-            app: Some("Next.js"),
+            app: Some("Next.js".into()),
             uptime_secs: Some(3600),
         }
     }

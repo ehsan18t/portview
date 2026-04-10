@@ -2,9 +2,16 @@
 //!
 //! Contains the [`PortEntry`] struct used across all modules.
 
+use std::borrow::Cow;
 use std::net::IpAddr;
 
 use serde::Serialize;
+
+/// Human-readable app or framework label for an entry.
+///
+/// Most detections use borrowed string literals, but `Cow` leaves room for
+/// future runtime-generated labels without changing the data model.
+pub type AppLabel = Cow<'static, str>;
 
 /// Protocol type for a socket entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -104,7 +111,7 @@ pub struct PortEntry {
     /// Project folder name or Docker container name.
     pub project: Option<String>,
     /// Detected app/framework label, for example "Next.js" or `PostgreSQL`.
-    pub app: Option<&'static str>,
+    pub app: Option<AppLabel>,
     /// Process uptime in seconds.
     pub uptime_secs: Option<u64>,
 }

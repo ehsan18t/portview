@@ -3,10 +3,12 @@
 //! Identifies the technology behind a port using three strategies:
 //! Docker image name, config file detection, and process name matching.
 
+use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::Path;
 
 use crate::docker::ContainerInfo;
+use crate::types::AppLabel;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConfigMatchKind {
@@ -14,11 +16,56 @@ enum ConfigMatchKind {
     Prefix,
 }
 
+struct ProjectFiles {
+    names: Vec<String>,
+}
+
+impl ProjectFiles {
+    fn read(project_root: &Path) -> Option<Self> {
+        let entries = std::fs::read_dir(project_root).ok()?;
+        let names = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect();
+
+        Some(Self { names })
+    }
+
+    fn contains_exact(&self, target: &str) -> bool {
+        self.names.iter().any(|name| name == target)
+    }
+
+    fn contains_prefix(&self, prefix: &str) -> bool {
+        self.names
+            .iter()
+            .any(|name| matches_config_name(name, prefix, ConfigMatchKind::Prefix))
+    }
+
+    fn any_exact(&self, targets: &[&str]) -> bool {
+        targets.iter().any(|target| self.contains_exact(target))
+    }
+
+    fn contains_extension(&self, target_ext: &str) -> bool {
+        self.names.iter().any(|name| {
+            std::path::Path::new(name)
+                .extension()
+                .and_then(OsStr::to_str)
+                .is_some_and(|ext| ext == target_ext)
+        })
+    }
+
+    fn read_text(&self, project_root: &Path, file_name: &str) -> Option<String> {
+        self.contains_exact(file_name)
+            .then(|| std::fs::read_to_string(project_root.join(file_name)).ok())
+            .flatten()
+    }
+}
+
 /// Detect app label from a Docker container's image name.
 ///
 /// Matches the base image name (before the colon tag) against known patterns.
 #[must_use]
-pub fn detect_from_image(info: &ContainerInfo) -> Option<&'static str> {
+pub fn detect_from_image(info: &ContainerInfo) -> Option<AppLabel> {
     let image = info.image.to_ascii_lowercase();
     let last_segment = image.split('/').next_back().unwrap_or(image.as_str());
     let base = last_segment
@@ -26,7 +73,7 @@ pub fn detect_from_image(info: &ContainerInfo) -> Option<&'static str> {
         .next()
         .unwrap_or(last_segment);
 
-    match base {
+    let label = match base {
         s if s.starts_with("postgres") => Some("PostgreSQL"),
         s if s.starts_with("mysql") => Some("MySQL"),
         s if s.starts_with("mariadb") => Some("MariaDB"),
@@ -60,7 +107,9 @@ pub fn detect_from_image(info: &ContainerInfo) -> Option<&'static str> {
             Some(".NET")
         }
         _ => None,
-    }
+    }?;
+
+    Some(Cow::Borrowed(label))
 }
 
 /// Config file patterns checked inside a project root directory.
@@ -76,9 +125,6 @@ const CONFIG_PATTERNS: &[(&str, &str, ConfigMatchKind)] = &[
     ("gatsby-config", "Gatsby", ConfigMatchKind::Prefix),
     ("vue.config", "Vue CLI", ConfigMatchKind::Prefix),
     ("webpack.config", "Webpack", ConfigMatchKind::Prefix),
-    ("manage.py", "Django", ConfigMatchKind::Exact),
-    ("app.py", "Flask", ConfigMatchKind::Exact),
-    ("wsgi.py", "Flask", ConfigMatchKind::Exact),
     ("Cargo.toml", "Rust", ConfigMatchKind::Exact),
     ("go.mod", "Go", ConfigMatchKind::Exact),
     ("pom.xml", "Java (Maven)", ConfigMatchKind::Exact),
@@ -91,66 +137,218 @@ const CONFIG_PATTERNS: &[(&str, &str, ConfigMatchKind)] = &[
     ("composer.json", "PHP", ConfigMatchKind::Exact),
     ("mix.exs", "Elixir", ConfigMatchKind::Exact),
     ("deno.json", "Deno", ConfigMatchKind::Exact),
-    ("pyproject.toml", "Python", ConfigMatchKind::Exact),
 ];
 
 /// Extension-based config patterns.
 const CONFIG_EXTENSIONS: &[(&str, &str)] = &[("csproj", ".NET"), ("fsproj", ".NET (F#)")];
 
+const PYTHON_ENTRY_FILES: &[&str] = &["app.py", "main.py", "server.py", "wsgi.py", "asgi.py"];
+const PYTHON_DEPENDENCY_FILES: &[&str] = &[
+    "pyproject.toml",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "Pipfile",
+    "poetry.lock",
+    "uv.lock",
+    "setup.py",
+];
+const PYTHON_PROJECT_FILES: &[&str] = &[
+    "manage.py",
+    "app.py",
+    "main.py",
+    "server.py",
+    "wsgi.py",
+    "asgi.py",
+    "pyproject.toml",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "Pipfile",
+    "poetry.lock",
+    "uv.lock",
+    "setup.py",
+];
+const DJANGO_SOURCE_PATTERNS: &[&str] = &[
+    "django.core.wsgi",
+    "django.core.asgi",
+    "django_settings_module",
+    "get_wsgi_application",
+    "get_asgi_application",
+];
+const PYTHON_DEPENDENCY_PATTERNS: &[(&str, &str)] = &[
+    ("django", "Django"),
+    ("flask", "Flask"),
+    ("fastapi", "FastAPI"),
+    ("starlette", "Starlette"),
+    ("litestar", "Litestar"),
+];
+
 /// Detect app label by scanning config files in a project root.
 ///
 /// Scans the directory once and preserves the configured pattern priority.
 #[must_use]
-pub fn detect_from_config(project_root: &Path) -> Option<&'static str> {
-    let Ok(entries) = std::fs::read_dir(project_root) else {
-        return None;
-    };
+pub fn detect_from_config(project_root: &Path) -> Option<AppLabel> {
+    let files = ProjectFiles::read(project_root)?;
 
-    let mut matched_patterns = [false; CONFIG_PATTERNS.len()];
-    let mut matched_extensions = [false; CONFIG_EXTENSIONS.len()];
-    let mut has_gemfile = false;
-    let mut has_config_ru = false;
+    detect_from_config_patterns(&files)
+        .or_else(|| detect_python_project(project_root, &files))
+        .or_else(|| detect_rack_project(&files))
+        .or_else(|| detect_from_config_extensions(&files))
+}
 
-    for entry in entries.filter_map(Result::ok) {
-        let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else {
-            continue;
+fn detect_from_config_patterns(files: &ProjectFiles) -> Option<AppLabel> {
+    for (pattern, label, match_kind) in CONFIG_PATTERNS {
+        let matches = match match_kind {
+            ConfigMatchKind::Exact => files.contains_exact(pattern),
+            ConfigMatchKind::Prefix => files.contains_prefix(pattern),
         };
 
-        has_gemfile |= name == "Gemfile";
-        has_config_ru |= name == "config.ru";
-
-        for (index, (pattern, _, match_kind)) in CONFIG_PATTERNS.iter().enumerate() {
-            matched_patterns[index] |= matches_config_name(name, pattern, *match_kind);
-        }
-
-        if let Some(ext) = std::path::Path::new(name)
-            .extension()
-            .and_then(OsStr::to_str)
-        {
-            for (index, (target_ext, _)) in CONFIG_EXTENSIONS.iter().enumerate() {
-                matched_extensions[index] |= *target_ext == ext;
-            }
-        }
-    }
-
-    for (index, (_, label, _)) in CONFIG_PATTERNS.iter().enumerate() {
-        if matched_patterns[index] {
-            return Some(label);
-        }
-    }
-
-    if has_gemfile && has_config_ru {
-        return Some("Ruby (Rack)");
-    }
-
-    for (index, (_, label)) in CONFIG_EXTENSIONS.iter().enumerate() {
-        if matched_extensions[index] {
-            return Some(label);
+        if matches {
+            return Some(Cow::Borrowed(label));
         }
     }
 
     None
+}
+
+fn detect_python_project(project_root: &Path, files: &ProjectFiles) -> Option<AppLabel> {
+    if !files.any_exact(PYTHON_PROJECT_FILES) {
+        return None;
+    }
+
+    if files.contains_exact("manage.py") {
+        return Some(Cow::Borrowed("Django"));
+    }
+
+    detect_python_framework_from_entry_files(project_root, files)
+        .or_else(|| detect_python_framework_from_dependencies(project_root, files))
+        .or(Some(Cow::Borrowed("Python")))
+}
+
+fn detect_python_framework_from_entry_files(
+    project_root: &Path,
+    files: &ProjectFiles,
+) -> Option<AppLabel> {
+    for file_name in PYTHON_ENTRY_FILES {
+        let Some(source) = files.read_text(project_root, file_name) else {
+            continue;
+        };
+
+        if let Some(label) = detect_python_framework_from_source(&source) {
+            return Some(Cow::Borrowed(label));
+        }
+    }
+
+    None
+}
+
+fn detect_python_framework_from_dependencies(
+    project_root: &Path,
+    files: &ProjectFiles,
+) -> Option<AppLabel> {
+    for file_name in PYTHON_DEPENDENCY_FILES {
+        let Some(contents) = files.read_text(project_root, file_name) else {
+            continue;
+        };
+
+        let normalized = contents.to_ascii_lowercase();
+        for (package, label) in PYTHON_DEPENDENCY_PATTERNS {
+            if contains_dependency_token(&normalized, package) {
+                return Some(Cow::Borrowed(label));
+            }
+        }
+    }
+
+    None
+}
+
+fn detect_python_framework_from_source(source: &str) -> Option<&'static str> {
+    let normalized = source.to_ascii_lowercase();
+
+    if contains_any(&normalized, DJANGO_SOURCE_PATTERNS) {
+        return Some("Django");
+    }
+
+    if source_mentions_framework(
+        &normalized,
+        &["from fastapi import", "import fastapi"],
+        "fastapi(",
+    ) {
+        return Some("FastAPI");
+    }
+    if source_mentions_framework(
+        &normalized,
+        &["from starlette.applications import", "import starlette"],
+        "starlette(",
+    ) {
+        return Some("Starlette");
+    }
+    if source_mentions_framework(
+        &normalized,
+        &["from litestar import", "import litestar"],
+        "litestar(",
+    ) {
+        return Some("Litestar");
+    }
+    if source_mentions_framework(
+        &normalized,
+        &["from flask import", "import flask"],
+        "flask(",
+    ) {
+        return Some("Flask");
+    }
+
+    None
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn source_mentions_framework(haystack: &str, imports: &[&str], constructor: &str) -> bool {
+    haystack.contains(constructor) && contains_any(haystack, imports)
+}
+
+fn contains_dependency_token(haystack: &str, token: &str) -> bool {
+    let mut offset = 0;
+
+    while let Some(index) = haystack[offset..].find(token) {
+        let start = offset + index;
+        let end = start + token.len();
+        let bytes = haystack.as_bytes();
+        let before = start
+            .checked_sub(1)
+            .and_then(|position| bytes.get(position))
+            .copied();
+        let after = bytes.get(end).copied();
+
+        if is_dependency_boundary(before) && is_dependency_boundary(after) {
+            return true;
+        }
+
+        offset = start + 1;
+    }
+
+    false
+}
+
+const fn is_dependency_boundary(byte: Option<u8>) -> bool {
+    match byte {
+        None => true,
+        Some(value) => !matches!(value, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'),
+    }
+}
+
+fn detect_rack_project(files: &ProjectFiles) -> Option<AppLabel> {
+    (files.contains_exact("Gemfile") && files.contains_exact("config.ru"))
+        .then_some(Cow::Borrowed("Ruby (Rack)"))
+}
+
+fn detect_from_config_extensions(files: &ProjectFiles) -> Option<AppLabel> {
+    CONFIG_EXTENSIONS.iter().find_map(|(ext, label)| {
+        files
+            .contains_extension(ext)
+            .then_some(Cow::Borrowed(*label))
+    })
 }
 
 fn matches_config_name(name: &str, pattern: &str, match_kind: ConfigMatchKind) -> bool {
@@ -235,12 +433,12 @@ const PROCESS_MAP: &[(&str, &str)] = &[
 
 /// Detect app label from a process executable name.
 #[must_use]
-pub fn detect_from_process(process_name: &str) -> Option<&'static str> {
+pub fn detect_from_process(process_name: &str) -> Option<AppLabel> {
     let name = crate::types::strip_windows_exe_suffix(process_name);
     PROCESS_MAP
         .iter()
         .find(|(key, _)| name.eq_ignore_ascii_case(key))
-        .map(|(_, label)| *label)
+        .map(|(_, label)| Cow::Borrowed(*label))
 }
 
 /// Detect the app label for a port entry using all available information.
@@ -251,7 +449,7 @@ pub fn detect(
     container: Option<&ContainerInfo>,
     project_root: Option<&Path>,
     process_name: &str,
-) -> Option<&'static str> {
+) -> Option<AppLabel> {
     if let Some(info) = container
         && let Some(label) = detect_from_image(info)
     {
@@ -280,7 +478,7 @@ mod tests {
             name: "db".to_string(),
             image: "postgres:16".to_string(),
         };
-        assert_eq!(detect_from_image(&info), Some("PostgreSQL"));
+        assert_eq!(detect_from_image(&info).as_deref(), Some("PostgreSQL"));
     }
 
     #[test]
@@ -289,7 +487,7 @@ mod tests {
             name: "cache".to_string(),
             image: "redis:7-alpine".to_string(),
         };
-        assert_eq!(detect_from_image(&info), Some("Redis"));
+        assert_eq!(detect_from_image(&info).as_deref(), Some("Redis"));
     }
 
     #[test]
@@ -298,7 +496,7 @@ mod tests {
             name: "cache".to_string(),
             image: "valkey/valkey:8-alpine".to_string(),
         };
-        assert_eq!(detect_from_image(&info), Some("Valkey"));
+        assert_eq!(detect_from_image(&info).as_deref(), Some("Valkey"));
     }
 
     #[test]
@@ -307,7 +505,7 @@ mod tests {
             name: "custom".to_string(),
             image: "my-custom-app:latest".to_string(),
         };
-        assert_eq!(detect_from_image(&info), None);
+        assert_eq!(detect_from_image(&info).as_deref(), None);
     }
 
     #[test]
@@ -317,7 +515,7 @@ mod tests {
             image: "prom/node-exporter:latest".to_string(),
         };
         assert_eq!(
-            detect_from_image(&info),
+            detect_from_image(&info).as_deref(),
             None,
             "node-exporter should not match Node.js"
         );
@@ -329,7 +527,7 @@ mod tests {
             name: "app".to_string(),
             image: "ghcr.io/org/nginx:latest".to_string(),
         };
-        assert_eq!(detect_from_image(&info), Some("Nginx"));
+        assert_eq!(detect_from_image(&info).as_deref(), Some("Nginx"));
     }
 
     #[test]
@@ -338,7 +536,7 @@ mod tests {
             name: "api".to_string(),
             image: "mcr.microsoft.com/dotnet/aspnet:8.0".to_string(),
         };
-        assert_eq!(detect_from_image(&info), Some(".NET"));
+        assert_eq!(detect_from_image(&info).as_deref(), Some(".NET"));
     }
 
     #[test]
@@ -348,7 +546,7 @@ mod tests {
             image: "mongo-express:latest".to_string(),
         };
         assert_eq!(
-            detect_from_image(&info),
+            detect_from_image(&info).as_deref(),
             None,
             "mongo-express should not match MongoDB"
         );
@@ -360,7 +558,7 @@ mod tests {
             name: "db".to_string(),
             image: "mongodb/mongodb-community-server:7.0".to_string(),
         };
-        assert_eq!(detect_from_image(&info), Some("MongoDB"));
+        assert_eq!(detect_from_image(&info).as_deref(), Some("MongoDB"));
     }
 
     #[test]
@@ -370,7 +568,7 @@ mod tests {
             image: "redis-commander:latest".to_string(),
         };
         assert_eq!(
-            detect_from_image(&info),
+            detect_from_image(&info).as_deref(),
             None,
             "redis-commander should not match Redis"
         );
@@ -382,7 +580,7 @@ mod tests {
             name: "cache".to_string(),
             image: "redis/redis-stack:latest".to_string(),
         };
-        assert_eq!(detect_from_image(&info), Some("Redis"));
+        assert_eq!(detect_from_image(&info).as_deref(), Some("Redis"));
     }
 
     #[test]
@@ -392,7 +590,7 @@ mod tests {
             image: "python-linter:latest".to_string(),
         };
         assert_eq!(
-            detect_from_image(&info),
+            detect_from_image(&info).as_deref(),
             None,
             "python-linter should not match Python"
         );
@@ -405,7 +603,7 @@ mod tests {
             image: "rubygems-mirror:latest".to_string(),
         };
         assert_eq!(
-            detect_from_image(&info),
+            detect_from_image(&info).as_deref(),
             None,
             "rubygems-mirror should not match Ruby"
         );
@@ -415,35 +613,83 @@ mod tests {
     fn config_nextjs() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("next.config.mjs"), "").unwrap();
-        assert_eq!(detect_from_config(dir.path()), Some("Next.js"));
+        assert_eq!(detect_from_config(dir.path()).as_deref(), Some("Next.js"));
     }
 
     #[test]
     fn config_rust() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("Cargo.toml"), "").unwrap();
-        assert_eq!(detect_from_config(dir.path()), Some("Rust"));
+        assert_eq!(detect_from_config(dir.path()).as_deref(), Some("Rust"));
     }
 
     #[test]
     fn config_django() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("manage.py"), "").unwrap();
-        assert_eq!(detect_from_config(dir.path()), Some("Django"));
+        assert_eq!(detect_from_config(dir.path()).as_deref(), Some("Django"));
     }
 
     #[test]
     fn config_flask() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("app.py"), "").unwrap();
-        assert_eq!(detect_from_config(dir.path()), Some("Flask"));
+        fs::write(
+            dir.path().join("app.py"),
+            "from flask import Flask\napp = Flask(__name__)\n",
+        )
+        .unwrap();
+        assert_eq!(detect_from_config(dir.path()).as_deref(), Some("Flask"));
+    }
+
+    #[test]
+    fn config_wsgi_detects_django_instead_of_flask() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("wsgi.py"),
+            "from django.core.wsgi import get_wsgi_application\napplication = get_wsgi_application()\n",
+        )
+        .unwrap();
+
+        assert_eq!(detect_from_config(dir.path()).as_deref(), Some("Django"));
+    }
+
+    #[test]
+    fn config_app_py_fastapi_is_not_mislabeled_as_flask() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("app.py"),
+            "from fastapi import FastAPI\napp = FastAPI()\n",
+        )
+        .unwrap();
+
+        assert_eq!(detect_from_config(dir.path()).as_deref(), Some("FastAPI"));
+    }
+
+    #[test]
+    fn config_generic_python_entry_falls_back_to_python() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("app.py"), "print('hello')\n").unwrap();
+
+        assert_eq!(detect_from_config(dir.path()).as_deref(), Some("Python"));
+    }
+
+    #[test]
+    fn config_python_dependency_file_detects_framework() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\ndependencies = [\"flask>=3.0\"]\n",
+        )
+        .unwrap();
+
+        assert_eq!(detect_from_config(dir.path()).as_deref(), Some("Flask"));
     }
 
     #[test]
     fn config_rack_requires_gemfile() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("config.ru"), "").unwrap();
-        assert_eq!(detect_from_config(dir.path()), None);
+        assert_eq!(detect_from_config(dir.path()).as_deref(), None);
     }
 
     #[test]
@@ -451,67 +697,76 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("Gemfile"), "").unwrap();
         fs::write(dir.path().join("config.ru"), "").unwrap();
-        assert_eq!(detect_from_config(dir.path()), Some("Ruby (Rack)"));
+        assert_eq!(
+            detect_from_config(dir.path()).as_deref(),
+            Some("Ruby (Rack)")
+        );
     }
 
     #[test]
     fn config_exact_match_does_not_overmatch_backup_file() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("Cargo.toml.bak"), "").unwrap();
-        assert_eq!(detect_from_config(dir.path()), None);
+        assert_eq!(detect_from_config(dir.path()).as_deref(), None);
     }
 
     #[test]
     fn config_exact_match_does_not_overmatch_renamed_script() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("manage.py.old"), "").unwrap();
-        assert_eq!(detect_from_config(dir.path()), None);
+        assert_eq!(detect_from_config(dir.path()).as_deref(), None);
     }
 
     #[test]
     fn config_dotnet_csproj() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("MyApp.csproj"), "").unwrap();
-        assert_eq!(detect_from_config(dir.path()), Some(".NET"));
+        assert_eq!(detect_from_config(dir.path()).as_deref(), Some(".NET"));
     }
 
     #[test]
     fn config_no_match() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("random.txt"), "").unwrap();
-        assert_eq!(detect_from_config(dir.path()), None);
+        assert_eq!(detect_from_config(dir.path()).as_deref(), None);
     }
 
     #[test]
     fn process_postgres() {
-        assert_eq!(detect_from_process("postgres"), Some("PostgreSQL"));
+        assert_eq!(
+            detect_from_process("postgres").as_deref(),
+            Some("PostgreSQL")
+        );
     }
 
     #[test]
     fn process_node() {
-        assert_eq!(detect_from_process("node"), Some("Node.js"));
+        assert_eq!(detect_from_process("node").as_deref(), Some("Node.js"));
     }
 
     #[test]
     fn process_unknown() {
-        assert_eq!(detect_from_process("svchost"), None);
+        assert_eq!(detect_from_process("svchost").as_deref(), None);
     }
 
     #[test]
     fn process_windows_exe_suffix() {
-        assert_eq!(detect_from_process("nginx.exe"), Some("Nginx"));
+        assert_eq!(detect_from_process("nginx.exe").as_deref(), Some("Nginx"));
     }
 
     #[test]
     fn process_windows_exe_suffix_is_case_insensitive() {
-        assert_eq!(detect_from_process("NGINX.EXE"), Some("Nginx"));
+        assert_eq!(detect_from_process("NGINX.EXE").as_deref(), Some("Nginx"));
     }
 
     #[test]
     fn process_case_insensitive() {
-        assert_eq!(detect_from_process("Nginx"), Some("Nginx"));
-        assert_eq!(detect_from_process("POSTGRES"), Some("PostgreSQL"));
-        assert_eq!(detect_from_process("Node"), Some("Node.js"));
+        assert_eq!(detect_from_process("Nginx").as_deref(), Some("Nginx"));
+        assert_eq!(
+            detect_from_process("POSTGRES").as_deref(),
+            Some("PostgreSQL")
+        );
+        assert_eq!(detect_from_process("Node").as_deref(), Some("Node.js"));
     }
 
     #[test]
@@ -523,7 +778,7 @@ mod tests {
             image: "postgres:16".to_string(),
         };
         let result = detect(Some(&info), Some(dir.path()), "node");
-        assert_eq!(result, Some("PostgreSQL"));
+        assert_eq!(result.as_deref(), Some("PostgreSQL"));
     }
 
     #[test]
@@ -531,13 +786,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("next.config.js"), "").unwrap();
         let result = detect(None, Some(dir.path()), "node");
-        assert_eq!(result, Some("Next.js"));
+        assert_eq!(result.as_deref(), Some("Next.js"));
     }
 
     #[test]
     fn combined_falls_through_to_process() {
         let result = detect(None, None, "postgres");
-        assert_eq!(result, Some("PostgreSQL"));
+        assert_eq!(result.as_deref(), Some("PostgreSQL"));
     }
 
     #[test]

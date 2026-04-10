@@ -972,7 +972,13 @@ fn collapse_docker_proxy_clusters(entries: Vec<PortEntry>) -> Vec<PortEntry> {
     result
 }
 
-type ProxyClusterKey = (u16, Protocol, State, Option<String>, Option<&'static str>);
+type ProxyClusterKey = (
+    u16,
+    Protocol,
+    State,
+    Option<String>,
+    Option<crate::types::AppLabel>,
+);
 
 fn docker_proxy_cluster_key(entry: &PortEntry) -> Option<ProxyClusterKey> {
     (is_docker_proxy_process(&entry.process) && has_docker_enrichment(entry)).then(|| {
@@ -981,7 +987,7 @@ fn docker_proxy_cluster_key(entry: &PortEntry) -> Option<ProxyClusterKey> {
             entry.proto,
             entry.state,
             entry.project.clone(),
-            entry.app,
+            entry.app.clone(),
         )
     })
 }
@@ -1317,21 +1323,21 @@ mod tests {
         ipv4.pid = 2001;
         ipv4.process = "com.docker.backend.exe".to_string();
         ipv4.project = Some("ecom-postgres".to_string());
-        ipv4.app = Some("PostgreSQL");
+        ipv4.app = Some("PostgreSQL".into());
 
         let mut ipv6 = make_entry(5432, Protocol::Tcp);
         ipv6.local_addr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
         ipv6.pid = 2001;
         ipv6.process = "com.docker.backend.exe".to_string();
         ipv6.project = Some("ecom-postgres".to_string());
-        ipv6.app = Some("PostgreSQL");
+        ipv6.app = Some("PostgreSQL".into());
 
         let mut relay = make_entry(5432, Protocol::Tcp);
         relay.local_addr = IpAddr::V6(Ipv6Addr::LOCALHOST);
         relay.pid = 2002;
         relay.process = "wslrelay.exe".to_string();
         relay.project = Some("ecom-postgres".to_string());
-        relay.app = Some("PostgreSQL");
+        relay.app = Some("PostgreSQL".into());
 
         let result = deduplicate(vec![ipv4, ipv6, relay]);
         assert_eq!(
@@ -1356,7 +1362,7 @@ mod tests {
         enriched.pid = 1002;
         enriched.process = "com.docker.backend.exe".to_string();
         enriched.project = Some("my-postgres".to_string());
-        enriched.app = Some("PostgreSQL");
+        enriched.app = Some("PostgreSQL".into());
         enriched.uptime_secs = Some(3600);
 
         let result = deduplicate(vec![bare, enriched]);
@@ -1374,12 +1380,12 @@ mod tests {
         let mut first = make_entry(8080, Protocol::Tcp);
         first.pid = 1001;
         first.process = "nginx".to_string();
-        first.app = Some("Nginx");
+        first.app = Some("Nginx".into());
 
         let mut second = make_entry(8080, Protocol::Tcp);
         second.pid = 1002;
         second.process = "nginx".to_string();
-        second.app = Some("Nginx");
+        second.app = Some("Nginx".into());
 
         let result = deduplicate(vec![first, second]);
         assert_eq!(
@@ -1395,12 +1401,12 @@ mod tests {
         proxy.pid = 1001;
         proxy.process = "wslrelay.exe".to_string();
         proxy.project = Some("my-postgres".to_string());
-        proxy.app = Some("PostgreSQL");
+        proxy.app = Some("PostgreSQL".into());
 
         let mut real = make_entry(5432, Protocol::Tcp);
         real.pid = 1002;
         real.process = "postgres".to_string();
-        real.app = Some("PostgreSQL");
+        real.app = Some("PostgreSQL".into());
 
         let result = deduplicate(vec![proxy, real]);
         assert_eq!(
@@ -1439,7 +1445,7 @@ mod tests {
     fn enrichment_score_fully_enriched() {
         let mut entry = make_entry(80, Protocol::Tcp);
         entry.project = Some("proj".to_string());
-        entry.app = Some("App");
+        entry.app = Some("App".into());
         entry.uptime_secs = Some(100);
         entry.user = "admin".to_string();
         assert_eq!(enrichment_score(&entry), 6, "fully enriched should score 6");

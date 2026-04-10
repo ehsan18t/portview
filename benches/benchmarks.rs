@@ -39,7 +39,11 @@ fn synthetic_entries(n: u16) -> Vec<PortEntry> {
             } else {
                 None
             },
-            app: if i % 5 == 0 { Some("Next.js") } else { None },
+            app: if i % 5 == 0 {
+                Some("Next.js".into())
+            } else {
+                None
+            },
             uptime_secs: Some(u64::from(i) * 3600),
         })
         .collect()

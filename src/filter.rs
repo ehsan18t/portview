@@ -295,7 +295,7 @@ mod tests {
         let mut entry = make_entry(3000, Protocol::Tcp, State::Listen);
         entry.process = "node".to_string();
         // The collector populates `app` via framework::detect for known processes.
-        entry.app = Some("Node.js");
+        entry.app = Some("Node.js".into());
         let result = apply(vec![entry], &default_filter());
         assert_eq!(
             result.len(),
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn relevance_filter_keeps_entry_with_app() {
         let mut entry = make_entry(5432, Protocol::Tcp, State::Listen);
-        entry.app = Some("PostgreSQL");
+        entry.app = Some("PostgreSQL".into());
         let result = apply(vec![entry], &default_filter());
         assert_eq!(result.len(), 1, "entry with app label should pass");
     }
@@ -336,7 +336,7 @@ mod tests {
         let mut entry = make_entry(80, Protocol::Tcp, State::Listen);
         entry.process = "nginx.exe".to_string();
         // The collector populates `app` via framework::detect for known processes.
-        entry.app = Some("Nginx");
+        entry.app = Some("Nginx".into());
         let result = apply(vec![entry], &default_filter());
         assert_eq!(result.len(), 1, "entry with app from nginx.exe should pass");
     }
@@ -346,7 +346,7 @@ mod tests {
         let mut entry = make_entry(3000, Protocol::Tcp, State::Listen);
         entry.process = "Python".to_string();
         // The collector populates `app` via framework::detect for known processes.
-        entry.app = Some("Python");
+        entry.app = Some("Python".into());
         let result = apply(vec![entry], &default_filter());
         assert_eq!(result.len(), 1, "entry with app from Python should pass");
     }
