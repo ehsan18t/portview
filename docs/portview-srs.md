@@ -18,7 +18,7 @@
 3. [Non-Functional Requirements](#3-non-functional-requirements)
 4. [Technology Stack](#4-technology-stack)
 5. [Constraints and Assumptions](#5-constraints-and-assumptions)
-6. [Future Considerations](#6-future-considerations)
+6. [Future Considerations](#6-future-considerations-post-v10)
 
 ---
 

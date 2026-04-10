@@ -7,7 +7,7 @@ use std::io::{self, IsTerminal, Write};
 
 use anyhow::{Context, Result};
 
-use crate::types::{PortEntry, format_uptime};
+use crate::types::PortEntry;
 
 /// Maximum display width for the process name column before truncation.
 const MAX_PROCESS_NAME_LEN: usize = 20;
@@ -205,6 +205,42 @@ fn write_tips_with_width(writer: &mut impl Write, terminal_width: Option<usize>)
 
     write!(writer, "\n{tip_box}\n").context("failed to write tips to stderr")?;
     Ok(())
+}
+
+fn format_uptime(secs: Option<u64>) -> String {
+    let Some(seconds) = secs else {
+        return "-".to_string();
+    };
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+
+    if days > 0 {
+        let day_hours = hours % 24;
+        let remaining_minutes = minutes % 60;
+
+        return match (day_hours > 0, remaining_minutes > 0) {
+            (true, true) => format!("{days}d {day_hours}h {remaining_minutes}m"),
+            (true, false) => format!("{days}d {day_hours}h"),
+            (false, true) => format!("{days}d {remaining_minutes}m"),
+            (false, false) => format!("{days}d"),
+        };
+    }
+
+    if hours > 0 {
+        let remaining_minutes = minutes % 60;
+        return if remaining_minutes > 0 {
+            format!("{hours}h {remaining_minutes}m")
+        } else {
+            format!("{hours}h")
+        };
+    }
+
+    if minutes > 0 {
+        return format!("{minutes}m");
+    }
+
+    "< 1m".to_string()
 }
 
 const fn table_columns(full: bool) -> &'static [Column] {
@@ -410,48 +446,57 @@ fn render_border_line(
 }
 
 fn render_header_row(columns: &[Column], widths: &[usize], vertical: char) -> String {
-    let separator = vertical.to_string();
     let cells = columns
         .iter()
         .zip(widths)
         .map(|(column, width)| {
             format_cell(column.heading_for_width(*width), *width, Alignment::Left)
         })
-        .collect::<Vec<_>>()
-        .join(&separator);
+        .collect::<Vec<_>>();
 
-    format!("{vertical}{cells}{vertical}")
+    render_bordered_cells(&cells, vertical)
 }
 
 fn render_data_row(row: &[String], columns: &[Column], widths: &[usize], vertical: char) -> String {
-    let separator = vertical.to_string();
     let cells = row
         .iter()
         .zip(columns)
         .zip(widths)
         .map(|((cell, column), width)| format_cell(cell, *width, column.alignment()))
-        .collect::<Vec<_>>()
-        .join(&separator);
+        .collect::<Vec<_>>();
 
-    format!("{vertical}{cells}{vertical}")
+    render_bordered_cells(&cells, vertical)
 }
 
 fn render_compact_header(columns: &[Column], widths: &[usize]) -> String {
-    columns
+    let cells = columns
         .iter()
         .zip(widths)
         .map(|(column, width)| pad_value(column.heading(), *width, Alignment::Left))
-        .collect::<Vec<_>>()
-        .join("  ")
+        .collect::<Vec<_>>();
+
+    render_compact_cells(&cells)
 }
 
 fn render_compact_row(row: &[String], columns: &[Column], widths: &[usize]) -> String {
-    row.iter()
+    let cells = row
+        .iter()
         .zip(columns)
         .zip(widths)
         .map(|((cell, column), width)| pad_value(cell, *width, column.alignment()))
-        .collect::<Vec<_>>()
-        .join("  ")
+        .collect::<Vec<_>>();
+
+    render_compact_cells(&cells)
+}
+
+fn render_bordered_cells(cells: &[String], vertical: char) -> String {
+    let separator = vertical.to_string();
+    let joined = cells.join(&separator);
+    format!("{vertical}{joined}{vertical}")
+}
+
+fn render_compact_cells(cells: &[String]) -> String {
+    cells.join("  ")
 }
 
 fn format_cell(value: &str, width: usize, alignment: Alignment) -> String {
@@ -629,27 +674,27 @@ fn render_titled_top_border(title: &str, total_width: usize, style: BorderStyle)
 }
 
 fn render_action_header(widths: &[usize; 3], vertical: char) -> String {
-    let separator = vertical.to_string();
     let cells = [
         format_cell("ACTION", widths[0], Alignment::Left),
         format_cell("FLAG", widths[1], Alignment::Left),
         format_cell("WHAT IT DOES", widths[2], Alignment::Left),
     ]
-    .join(&separator);
+    .into_iter()
+    .collect::<Vec<_>>();
 
-    format!("{vertical}{cells}{vertical}")
+    render_bordered_cells(&cells, vertical)
 }
 
 fn render_action_row(action: &ActionItem, widths: &[usize; 3], vertical: char) -> String {
-    let separator = vertical.to_string();
     let cells = [
         format_cell(action.name, widths[0], Alignment::Left),
         format_cell(action.flag, widths[1], Alignment::Left),
         format_cell(action.detail, widths[2], Alignment::Left),
     ]
-    .join(&separator);
+    .into_iter()
+    .collect::<Vec<_>>();
 
-    format!("{vertical}{cells}{vertical}")
+    render_bordered_cells(&cells, vertical)
 }
 
 fn tip_inner_width(terminal_width: Option<usize>) -> usize {
@@ -1031,6 +1076,112 @@ mod tests {
 
     use super::*;
     use crate::types::{Protocol, State};
+
+    #[test]
+    fn format_uptime_none() {
+        assert_eq!(format_uptime(None), "-");
+    }
+
+    #[test]
+    fn format_uptime_seconds() {
+        assert_eq!(format_uptime(Some(30)), "< 1m");
+    }
+
+    #[test]
+    fn format_uptime_minutes() {
+        assert_eq!(format_uptime(Some(300)), "5m");
+    }
+
+    #[test]
+    fn format_uptime_hours_minutes() {
+        assert_eq!(format_uptime(Some(7200 + 2400)), "2h 40m");
+    }
+
+    #[test]
+    fn format_uptime_exact_hours_no_minutes() {
+        assert_eq!(
+            format_uptime(Some(7200)),
+            "2h",
+            "exact hours should not show 0m"
+        );
+    }
+
+    #[test]
+    fn format_uptime_days_hours_minutes() {
+        assert_eq!(format_uptime(Some(86400 + 32400 + 900)), "1d 9h 15m");
+    }
+
+    #[test]
+    fn format_uptime_exact_days_no_hours_no_minutes() {
+        assert_eq!(
+            format_uptime(Some(86400)),
+            "1d",
+            "exact day should not show 0h"
+        );
+    }
+
+    #[test]
+    fn format_uptime_days_with_zero_hours_and_minutes() {
+        assert_eq!(
+            format_uptime(Some(86400 + 900)),
+            "1d 15m",
+            "days with only minutes should skip the 0h component"
+        );
+    }
+
+    #[test]
+    fn format_uptime_days_with_hours_no_minutes() {
+        assert_eq!(
+            format_uptime(Some(86400 + 3600)),
+            "1d 1h",
+            "days with only hours should not show 0m"
+        );
+    }
+
+    #[test]
+    fn format_uptime_zero_seconds() {
+        assert_eq!(
+            format_uptime(Some(0)),
+            "< 1m",
+            "zero seconds should show sub-minute label"
+        );
+    }
+
+    #[test]
+    fn format_uptime_just_under_one_minute() {
+        assert_eq!(
+            format_uptime(Some(59)),
+            "< 1m",
+            "59 seconds should still be sub-minute"
+        );
+    }
+
+    #[test]
+    fn format_uptime_exact_one_minute() {
+        assert_eq!(
+            format_uptime(Some(60)),
+            "1m",
+            "exactly 60 seconds should show 1m"
+        );
+    }
+
+    #[test]
+    fn format_uptime_just_under_one_hour() {
+        assert_eq!(
+            format_uptime(Some(3599)),
+            "59m",
+            "3599 seconds should show 59m, not 1h"
+        );
+    }
+
+    #[test]
+    fn format_uptime_exact_one_hour() {
+        assert_eq!(
+            format_uptime(Some(3600)),
+            "1h",
+            "exactly one hour should not show 0m"
+        );
+    }
 
     fn sample_entry() -> PortEntry {
         PortEntry {

@@ -22,9 +22,7 @@ pub struct FilterOptions {
 
 /// Check whether a port entry is considered developer-relevant.
 ///
-/// An entry is relevant if it has a detected project, app label, or a
-/// process name recognized by the framework engine (which already ran
-/// during collection).
+/// An entry is relevant if collection already attached a project or app label.
 ///
 /// Because [`crate::collector::build_entry`] calls
 /// `framework::detect` -- which includes a process-name fallback --
