@@ -230,7 +230,7 @@ fn fetch_containers_json() -> Option<String> {
     // Safety: getuid() is a simple syscall with no preconditions.
     let uid = unsafe { libc::getuid() };
 
-    fetch_first_success(unix_socket_paths(uid, home_dir()), |path| {
+    fetch_first_success(unix_socket_paths(uid, crate::project::home_dir()), |path| {
         let mut stream = UnixStream::connect(path).ok()?;
         // Best-effort timeout; proceed even if it cannot be set.
         drop(stream.set_read_timeout(Some(DAEMON_TIMEOUT)));
@@ -288,11 +288,6 @@ fn unix_socket_paths(uid: u32, home: Option<PathBuf>) -> Vec<String> {
     }
 
     socket_paths
-}
-
-#[cfg(unix)]
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 #[cfg(unix)]
