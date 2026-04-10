@@ -160,9 +160,18 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
 
     let sysinfo_pid = sysinfo::Pid::from_u32(l.process.pid);
     let sysinfo_process = context.sys.process(sysinfo_pid);
+    let exe_path = sysinfo_process.and_then(sysinfo::Process::exe);
+    let exe_name = process_executable_name(exe_path);
     let user = resolve_user(sysinfo_process, l.process.pid, context.user_resolver);
 
-    let container = resolve_container(context, l.socket, proto, l.process.pid, &l.process.name);
+    let container = resolve_container(
+        context,
+        l.socket,
+        proto,
+        l.process.pid,
+        &l.process.name,
+        exe_name,
+    );
 
     // Project detection: use container name for Docker ports, otherwise walk cwd.
     // The cache avoids redundant directory walks for processes sharing a cwd.
@@ -170,7 +179,7 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
         || {
             let cwd = sysinfo_process.and_then(sysinfo::Process::cwd);
             let cmd = sysinfo_process.map_or(&[][..], sysinfo::Process::cmd);
-            let root = lookup_project_root(cwd, cmd, context.project_cache, context.home);
+            let root = lookup_project_root(cwd, exe_path, cmd, context.project_cache, context.home);
             let name = root
                 .as_ref()
                 .and_then(|r| r.file_name())
@@ -181,7 +190,8 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
     );
 
     // App/framework detection
-    let app = framework::detect(container.as_ref(), project_root.as_deref(), &l.process.name);
+    let app = framework::detect(container.as_ref(), project_root.as_deref(), &l.process.name)
+        .or_else(|| exe_name.and_then(framework::detect_from_process));
 
     // Uptime from process start time
     let uptime_secs = sysinfo_process.and_then(|p| {
@@ -207,34 +217,48 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
     }
 }
 
+#[cfg(target_os = "linux")]
 fn resolve_container(
-    #[cfg(target_os = "linux")] context: &mut CollectContext<'_>,
-    #[cfg(not(target_os = "linux"))] context: &CollectContext<'_>,
+    context: &mut CollectContext<'_>,
     socket: SocketAddr,
     proto: Protocol,
     pid: u32,
     process_name: &str,
+    exe_name: Option<&str>,
 ) -> Option<docker::ContainerInfo> {
     let socket_match =
-        lookup_container(context.container_map, socket, proto, process_name).cloned();
+        lookup_container(context.container_map, socket, proto, process_name, exe_name).cloned();
 
-    #[cfg(target_os = "linux")]
-    {
-        socket_match.or_else(|| {
-            docker::lookup_rootless_podman_container(
-                pid,
-                process_name,
-                context.podman_rootless_resolver,
-                context.home,
-            )
-        })
-    }
+    let podman_process_name = rootless_podman_process_name(process_name, exe_name)?;
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = pid;
-        socket_match
-    }
+    socket_match.or_else(|| {
+        docker::lookup_rootless_podman_container(
+            pid,
+            podman_process_name,
+            context.podman_rootless_resolver,
+            context.home,
+        )
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn resolve_container(
+    context: &CollectContext<'_>,
+    socket: SocketAddr,
+    proto: Protocol,
+    pid: u32,
+    process_name: &str,
+    exe_name: Option<&str>,
+) -> Option<docker::ContainerInfo> {
+    let _ = pid;
+    lookup_container(context.container_map, socket, proto, process_name, exe_name).cloned()
+}
+
+fn process_executable_name(exe_path: Option<&Path>) -> Option<&str> {
+    exe_path
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
 }
 
 fn lookup_container<'a>(
@@ -242,6 +266,7 @@ fn lookup_container<'a>(
     socket: SocketAddr,
     proto: Protocol,
     process_name: &str,
+    exe_name: Option<&str>,
 ) -> Option<&'a docker::ContainerInfo> {
     if let Some(container) = container_map
         .get(&(Some(socket.ip()), socket.port(), proto))
@@ -250,7 +275,7 @@ fn lookup_container<'a>(
         return Some(container);
     }
 
-    if !is_docker_proxy_process(process_name) {
+    if !matches_docker_proxy_process(process_name, exe_name) {
         return None;
     }
 
@@ -269,6 +294,27 @@ fn lookup_container<'a>(
     }
 
     candidate
+}
+
+fn matches_docker_proxy_process(process_name: &str, exe_name: Option<&str>) -> bool {
+    is_docker_proxy_process(process_name) || exe_name.is_some_and(is_docker_proxy_process)
+}
+
+#[cfg(target_os = "linux")]
+fn rootless_podman_process_name<'a>(
+    process_name: &'a str,
+    exe_name: Option<&'a str>,
+) -> Option<&'a str> {
+    if is_rootless_podman_process(process_name) {
+        Some(process_name)
+    } else {
+        exe_name.filter(|name| is_rootless_podman_process(name))
+    }
+}
+
+#[cfg(target_os = "linux")]
+const fn is_rootless_podman_process(process_name: &str) -> bool {
+    process_name.eq_ignore_ascii_case("rootlessport")
 }
 
 /// Resolve the best-known TCP state for a listener entry.
@@ -633,8 +679,8 @@ const fn state_from_windows_code(code: u32) -> State {
 /// Look up the project root for a process, using a cache to skip repeated
 /// directory walks for processes that share the same working directory.
 ///
-/// Falls back to the first absolute path found in the command-line
-/// arguments when cwd-based detection fails.
+/// Falls back to the executable path and then the first absolute path
+/// found in the command-line arguments when cwd-based detection fails.
 ///
 /// Accepts `Option<&Path>` to avoid allocating a `PathBuf` for every
 /// process on the cache-hit path. A `PathBuf` is only allocated on a
@@ -644,12 +690,19 @@ const fn state_from_windows_code(code: u32) -> State {
 /// [`collect`] and passed down to avoid repeated env-var reads.
 fn lookup_project_root(
     cwd: Option<&Path>,
+    exe: Option<&Path>,
     cmd: &[OsString],
     cache: &mut HashMap<PathBuf, Option<PathBuf>>,
     home: Option<&Path>,
 ) -> Option<PathBuf> {
     if let Some(cwd_path) = cwd
         && let Some(root) = lookup_cached_project_root(cwd_path, cache, home)
+    {
+        return Some(root);
+    }
+
+    if let Some(exe_path) = exe.and_then(Path::parent)
+        && let Some(root) = lookup_cached_project_root(exe_path, cache, home)
     {
         return Some(root);
     }
@@ -985,10 +1038,11 @@ fn resolve_user(
 
 /// Refresh kind for process metadata needed by enrichment.
 ///
-/// Collects: user, working directory, command-line args.
+/// Collects: user, executable path, working directory, command-line args.
 fn process_refresh_kind() -> ProcessRefreshKind {
     ProcessRefreshKind::nothing()
         .with_user(UpdateKind::OnlyIfNotSet)
+        .with_exe(UpdateKind::OnlyIfNotSet)
         .with_cwd(UpdateKind::OnlyIfNotSet)
         .with_cmd(UpdateKind::OnlyIfNotSet)
 }
@@ -1323,6 +1377,7 @@ mod tests {
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080),
             Protocol::Tcp,
             "node",
+            None,
         );
         assert_eq!(exact.map(|info| info.name.as_str()), Some("loopback-app"));
 
@@ -1331,6 +1386,7 @@ mod tests {
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 8080),
             Protocol::Tcp,
             "node",
+            None,
         );
         assert!(
             mismatch.is_none(),
@@ -1354,6 +1410,7 @@ mod tests {
             SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 5432),
             Protocol::Tcp,
             "wslrelay.exe",
+            None,
         );
         assert_eq!(container.map(|info| info.name.as_str()), Some("postgres"));
     }
@@ -1374,8 +1431,49 @@ mod tests {
             SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 6379),
             Protocol::Tcp,
             "rootlessport",
+            None,
         );
         assert_eq!(container.map(|info| info.name.as_str()), Some("redis"));
+    }
+
+    #[test]
+    fn container_lookup_uses_exe_name_for_proxy_fallback() {
+        let mut map = HashMap::new();
+        map.insert(
+            (Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)), 3000, Protocol::Tcp),
+            docker::ContainerInfo {
+                name: "web".to_string(),
+                image: "node:22".to_string(),
+            },
+        );
+
+        let container = lookup_container(
+            &map,
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 3000),
+            Protocol::Tcp,
+            "truncated-helper",
+            Some("wslrelay.exe"),
+        );
+        assert_eq!(container.map(|info| info.name.as_str()), Some("web"));
+    }
+
+    #[test]
+    fn process_executable_name_uses_file_name() {
+        let exe_path = Path::new("/usr/bin/google-chrome-stable");
+        assert_eq!(
+            process_executable_name(Some(exe_path)),
+            Some("google-chrome-stable"),
+            "the executable file name should be used when available"
+        );
+    }
+
+    #[test]
+    fn process_executable_name_ignores_empty_file_name() {
+        let exe_path = Path::new("/");
+        assert!(
+            process_executable_name(Some(exe_path)).is_none(),
+            "paths without a usable file name should be ignored"
+        );
     }
 
     #[test]
@@ -1439,6 +1537,32 @@ mod tests {
         assert!(
             unrelated_result.is_none(),
             "an unrelated path under the same ancestor must not inherit another project's root"
+        );
+    }
+
+    #[test]
+    fn lookup_project_root_prefers_exe_parent_before_cmd_paths() {
+        let workspace = TempDir::new().unwrap();
+        let exe_root = workspace.path().join("service");
+        let cmd_root = workspace.path().join("tooling");
+        let exe_path = exe_root.join("bin").join("service.exe");
+        let cmd_path = cmd_root.join("scripts").join("launcher.py");
+
+        fs::create_dir_all(exe_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(cmd_path.parent().unwrap()).unwrap();
+        fs::write(exe_root.join("Cargo.toml"), "").unwrap();
+        fs::write(cmd_root.join("pyproject.toml"), "").unwrap();
+        fs::write(&exe_path, "").unwrap();
+        fs::write(&cmd_path, "").unwrap();
+
+        let cmd = vec![OsString::from(&cmd_path)];
+        let mut cache = HashMap::new();
+
+        let result = lookup_project_root(None, Some(&exe_path), &cmd, &mut cache, None);
+        assert_eq!(
+            result.as_deref(),
+            Some(exe_root.as_path()),
+            "the executable path should win before command-line argument scanning"
         );
     }
 }
