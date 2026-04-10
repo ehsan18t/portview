@@ -125,13 +125,19 @@ pub fn format_uptime(secs: Option<u64>) -> String {
         let day_hours = hours % 24;
         let remaining_minutes = minutes % 60;
 
-        if remaining_minutes > 0 {
-            format!("{days}d {day_hours}h {remaining_minutes}m")
-        } else {
-            format!("{days}d {day_hours}h")
+        match (day_hours > 0, remaining_minutes > 0) {
+            (true, true) => format!("{days}d {day_hours}h {remaining_minutes}m"),
+            (true, false) => format!("{days}d {day_hours}h"),
+            (false, true) => format!("{days}d {remaining_minutes}m"),
+            (false, false) => format!("{days}d"),
         }
     } else if hours > 0 {
-        format!("{}h {}m", hours, minutes % 60)
+        let remaining_minutes = minutes % 60;
+        if remaining_minutes > 0 {
+            format!("{hours}h {remaining_minutes}m")
+        } else {
+            format!("{hours}h")
+        }
     } else if minutes > 0 {
         format!("{minutes}m")
     } else {
@@ -205,7 +211,43 @@ mod tests {
     }
 
     #[test]
+    fn format_uptime_exact_hours_no_minutes() {
+        assert_eq!(
+            format_uptime(Some(7200)),
+            "2h",
+            "exact hours should not show 0m"
+        );
+    }
+
+    #[test]
     fn format_uptime_days_hours_minutes() {
         assert_eq!(format_uptime(Some(86400 + 32400 + 900)), "1d 9h 15m");
+    }
+
+    #[test]
+    fn format_uptime_exact_days_no_hours_no_minutes() {
+        assert_eq!(
+            format_uptime(Some(86400)),
+            "1d",
+            "exact day should not show 0h"
+        );
+    }
+
+    #[test]
+    fn format_uptime_days_with_zero_hours_and_minutes() {
+        assert_eq!(
+            format_uptime(Some(86400 + 900)),
+            "1d 15m",
+            "days with only minutes should skip the 0h component"
+        );
+    }
+
+    #[test]
+    fn format_uptime_days_with_hours_no_minutes() {
+        assert_eq!(
+            format_uptime(Some(86400 + 3600)),
+            "1d 1h",
+            "days with only hours should not show 0m"
+        );
     }
 }
