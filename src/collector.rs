@@ -571,6 +571,7 @@ const fn state_from_linux_code(code: &str) -> State {
 #[cfg(any(test, windows))]
 const fn state_from_windows_code(code: u32) -> State {
     match code {
+        1 => State::Close,
         2 => State::Listen,
         3 => State::SynSent,
         4 => State::SynReceived,
@@ -1174,6 +1175,7 @@ mod tests {
 
     #[test]
     fn windows_state_codes_match_expected_values() {
+        assert_eq!(state_from_windows_code(1), State::Close);
         assert_eq!(state_from_windows_code(2), State::Listen);
         assert_eq!(state_from_windows_code(5), State::Established);
         assert_eq!(state_from_windows_code(12), State::DeleteTcb);
