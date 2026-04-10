@@ -119,7 +119,8 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let mut project_cache: HashMap<PathBuf, Option<PathBuf>> = HashMap::new();
+    let mut project_cache: HashMap<PathBuf, Option<PathBuf>> =
+        HashMap::with_capacity(raw_listeners.len());
     #[cfg(target_os = "linux")]
     let mut podman_rootless_resolver = docker::RootlessPodmanResolver::default();
 
@@ -803,7 +804,8 @@ fn lookup_cached_project_root(
 /// rows from the same PID and then removes known Docker proxy duplicates
 /// while preserving distinct non-proxy worker processes.
 fn deduplicate(entries: Vec<PortEntry>) -> Vec<PortEntry> {
-    let mut grouped: HashMap<(u16, IpAddr, Protocol, State), Vec<PortEntry>> = HashMap::new();
+    let mut grouped: HashMap<(u16, IpAddr, Protocol, State), Vec<PortEntry>> =
+        HashMap::with_capacity(entries.len());
 
     for entry in entries {
         let key = (entry.port, entry.local_addr, entry.proto, entry.state);
@@ -820,8 +822,9 @@ fn deduplicate(entries: Vec<PortEntry>) -> Vec<PortEntry> {
 }
 
 fn collapse_docker_proxy_clusters(entries: Vec<PortEntry>) -> Vec<PortEntry> {
-    let mut proxy_clusters: HashMap<ProxyClusterKey, Vec<PortEntry>> = HashMap::new();
-    let mut result = Vec::new();
+    let mut proxy_clusters: HashMap<ProxyClusterKey, Vec<PortEntry>> =
+        HashMap::with_capacity(entries.len());
+    let mut result = Vec::with_capacity(entries.len());
 
     for entry in entries {
         if let Some(key) = docker_proxy_cluster_key(&entry) {
@@ -889,7 +892,7 @@ const fn has_docker_enrichment(entry: &PortEntry) -> bool {
 fn deduplicate_by_pid(entries: Vec<PortEntry>) -> Vec<PortEntry> {
     use std::collections::hash_map::Entry;
 
-    let mut best_by_pid: HashMap<u32, PortEntry> = HashMap::new();
+    let mut best_by_pid: HashMap<u32, PortEntry> = HashMap::with_capacity(entries.len());
 
     for entry in entries {
         match best_by_pid.entry(entry.pid) {
