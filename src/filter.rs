@@ -6,9 +6,6 @@
 use crate::framework;
 use crate::types::{PortEntry, Protocol, State};
 
-#[cfg(test)]
-use std::net::{IpAddr, Ipv4Addr};
-
 /// Options controlling which entries pass through the filter.
 #[allow(clippy::struct_excessive_bools)]
 pub struct FilterOptions {
@@ -74,8 +71,9 @@ pub fn apply(mut entries: Vec<PortEntry>, opts: &FilterOptions) -> Vec<PortEntry
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
     use super::*;
-    use crate::types::{PortEntry, State};
 
     fn make_entry(port: u16, proto: Protocol, state: State) -> PortEntry {
         PortEntry {
