@@ -3,10 +3,10 @@
 //! Parses CLI arguments, collects socket data, applies filters, and renders
 //! output to stdout.
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use portview::{collector, display, filter};
 
@@ -55,6 +55,10 @@ struct Cli {
     /// Output results as a JSON array.
     #[arg(long = "json")]
     json: bool,
+
+    /// Disable Docker/Podman and project-root enrichment. Combine with --all for the rawest view.
+    #[arg(long = "no-enrich")]
+    no_enrich: bool,
 }
 
 fn main() -> ExitCode {
@@ -69,7 +73,9 @@ fn main() -> ExitCode {
 fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    let entries = collector::collect()?;
+    let entries = collector::collect_with_options(&collector::CollectOptions {
+        deep_enrichment: !cli.no_enrich,
+    })?;
     let filtered = filter::apply(
         entries,
         &filter::FilterOptions {
@@ -92,9 +98,17 @@ fn run() -> Result<()> {
                 compact: cli.compact,
             },
         )?;
-        if std::io::stdout().is_terminal() {
-            display::print_tips()?;
-        }
+    }
+
+    if std::io::stderr().is_terminal()
+        && let Some(warning) = collector::visibility_warning()
+    {
+        writeln!(std::io::stderr().lock(), "warning: {warning}")
+            .context("failed to write visibility warning to stderr")?;
+    }
+
+    if !cli.json && std::io::stdout().is_terminal() {
+        display::print_tips()?;
     }
 
     Ok(())

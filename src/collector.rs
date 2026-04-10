@@ -40,10 +40,26 @@ struct CollectContext<'a> {
     container_map: &'a ContainerPortMap,
     tcp_states: &'a TcpStateIndex,
     now_epoch: u64,
+    deep_enrichment: bool,
     project_cache: &'a mut HashMap<PathBuf, Option<PathBuf>>,
     home: Option<&'a Path>,
     #[cfg(target_os = "linux")]
     podman_rootless_resolver: &'a mut docker::RootlessPodmanResolver,
+}
+
+/// Options controlling how the collector enriches socket data.
+#[derive(Debug, Clone, Copy)]
+pub struct CollectOptions {
+    /// Enable Docker/Podman lookup plus project-root and config-file enrichment.
+    pub deep_enrichment: bool,
+}
+
+impl Default for CollectOptions {
+    fn default() -> Self {
+        Self {
+            deep_enrichment: true,
+        }
+    }
 }
 
 /// Collect all open TCP and UDP sockets on the system.
@@ -65,9 +81,22 @@ struct CollectContext<'a> {
 /// outlive the caller. Callers embedding this in a persistent service
 /// should add their own cancellation or timeout wrapper.
 pub fn collect() -> Result<Vec<PortEntry>> {
+    collect_with_options(&CollectOptions::default())
+}
+
+/// Collect all open TCP and UDP sockets using the provided enrichment options.
+///
+/// When `deep_enrichment` is disabled, the collector skips Docker/Podman
+/// probing, project-root walking, config-file scanning, and command-line path
+/// fallback. Core socket, PID, user, uptime, and process-name detection remain.
+pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> {
     // Start Docker/Podman detection early so it runs concurrently with
     // the OS-level socket enumeration and process metadata refresh.
-    let docker_handle = docker::start_detection();
+    let docker_handle = if options.deep_enrichment {
+        Some(docker::start_detection())
+    } else {
+        None
+    };
 
     let raw_listeners = listeners::get_all()
         .map_err(|e| anyhow::anyhow!("failed to enumerate open sockets from the OS: {e}"))?;
@@ -89,14 +118,15 @@ pub fn collect() -> Result<Vec<PortEntry>> {
         sys.refresh_processes_specifics(
             ProcessesToUpdate::Some(&tracked_pids),
             false,
-            process_refresh_kind(),
+            process_refresh_kind(options.deep_enrichment),
         );
     }
 
     let mut user_resolver = UserResolver::default();
 
     // Block on Docker results only after all other I/O is done.
-    let container_map = docker::await_detection(docker_handle);
+    let container_map =
+        docker_handle.map_or_else(ContainerPortMap::default, docker::await_detection);
     let tcp_states = load_tcp_state_index();
 
     let now_epoch = std::time::SystemTime::now()
@@ -110,13 +140,18 @@ pub fn collect() -> Result<Vec<PortEntry>> {
 
     // Resolve the home directory once so that every per-process
     // invocation of find_from_dir does not each query the OS environment.
-    let home = project::home_dir();
+    let home = if options.deep_enrichment {
+        project::home_dir()
+    } else {
+        None
+    };
     let mut context = CollectContext {
         sys: &sys,
         user_resolver: &mut user_resolver,
         container_map: &container_map,
         tcp_states: &tcp_states,
         now_epoch,
+        deep_enrichment: options.deep_enrichment,
         project_cache: &mut project_cache,
         home: home.as_deref(),
         #[cfg(target_os = "linux")]
@@ -148,6 +183,19 @@ pub fn collect() -> Result<Vec<PortEntry>> {
     Ok(entries)
 }
 
+/// Return a best-effort warning when the current process lacks full visibility.
+///
+/// On Linux this checks for effective root privileges. On Windows it checks
+/// whether the current token is elevated. Other targets return `None`.
+#[must_use]
+pub fn visibility_warning() -> Option<&'static str> {
+    if has_full_visibility_privileges() {
+        None
+    } else {
+        Some(visibility_warning_message())
+    }
+}
+
 /// Build a single [`PortEntry`] from a [`listeners::Listener`], enriching it
 /// with Docker, project, framework, and uptime information.
 fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> PortEntry {
@@ -164,34 +212,46 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
     let exe_name = process_executable_name(exe_path);
     let user = resolve_user(sysinfo_process, l.process.pid, context.user_resolver);
 
-    let container = resolve_container(
-        context,
-        l.socket,
-        proto,
-        l.process.pid,
-        &l.process.name,
-        exe_name,
-    );
+    let (container, project_name, project_root) = if context.deep_enrichment {
+        let container = resolve_container(
+            context,
+            l.socket,
+            proto,
+            l.process.pid,
+            &l.process.name,
+            exe_name,
+        );
 
-    // Project detection: use container name for Docker ports, otherwise walk cwd.
-    // The cache avoids redundant directory walks for processes sharing a cwd.
-    let (project_name, project_root) = container.as_ref().map_or_else(
-        || {
-            let cwd = sysinfo_process.and_then(sysinfo::Process::cwd);
-            let cmd = sysinfo_process.map_or(&[][..], sysinfo::Process::cmd);
-            let root = lookup_project_root(cwd, exe_path, cmd, context.project_cache, context.home);
-            let name = root
-                .as_ref()
-                .and_then(|r| r.file_name())
-                .map(|n| n.to_string_lossy().into_owned());
-            (name, root)
-        },
-        |c| (Some(c.name.clone()), None),
-    );
+        // Project detection: use container name for Docker ports, otherwise walk cwd.
+        // The cache avoids redundant directory walks for processes sharing a cwd.
+        let (project_name, project_root) = container.as_ref().map_or_else(
+            || {
+                let cwd = sysinfo_process.and_then(sysinfo::Process::cwd);
+                let cmd = sysinfo_process.map_or(&[][..], sysinfo::Process::cmd);
+                let root =
+                    lookup_project_root(cwd, exe_path, cmd, context.project_cache, context.home);
+                let name = root
+                    .as_ref()
+                    .and_then(|r| r.file_name())
+                    .map(|n| n.to_string_lossy().into_owned());
+                (name, root)
+            },
+            |c| (Some(c.name.clone()), None),
+        );
+
+        (container, project_name, project_root)
+    } else {
+        (None, None, None)
+    };
 
     // App/framework detection
-    let app = framework::detect(container.as_ref(), project_root.as_deref(), &l.process.name)
-        .or_else(|| exe_name.and_then(framework::detect_from_process));
+    let app = if context.deep_enrichment {
+        framework::detect(container.as_ref(), project_root.as_deref(), &l.process.name)
+            .or_else(|| exe_name.and_then(framework::detect_from_process))
+    } else {
+        framework::detect_from_process(&l.process.name)
+            .or_else(|| exe_name.and_then(framework::detect_from_process))
+    };
 
     // Uptime from process start time
     let uptime_secs = sysinfo_process.and_then(|p| {
@@ -1038,13 +1098,115 @@ fn resolve_user(
 
 /// Refresh kind for process metadata needed by enrichment.
 ///
-/// Collects: user, executable path, working directory, command-line args.
-fn process_refresh_kind() -> ProcessRefreshKind {
-    ProcessRefreshKind::nothing()
+/// Always collects user and executable-path metadata. Deep enrichment also
+/// collects working-directory and command-line data for project detection.
+fn process_refresh_kind(deep_enrichment: bool) -> ProcessRefreshKind {
+    let refresh_kind = ProcessRefreshKind::nothing()
         .with_user(UpdateKind::OnlyIfNotSet)
-        .with_exe(UpdateKind::OnlyIfNotSet)
-        .with_cwd(UpdateKind::OnlyIfNotSet)
-        .with_cmd(UpdateKind::OnlyIfNotSet)
+        .with_exe(UpdateKind::OnlyIfNotSet);
+
+    if deep_enrichment {
+        refresh_kind
+            .with_cwd(UpdateKind::OnlyIfNotSet)
+            .with_cmd(UpdateKind::OnlyIfNotSet)
+    } else {
+        refresh_kind
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn has_full_visibility_privileges() -> bool {
+    // Safety: `geteuid` is a simple libc call with no preconditions.
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(windows)]
+fn has_full_visibility_privileges() -> bool {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct TokenElevation {
+        token_is_elevated: i32,
+    }
+
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn OpenProcessToken(
+            process_handle: *mut c_void,
+            desired_access: u32,
+            token_handle: *mut *mut c_void,
+        ) -> i32;
+        fn GetTokenInformation(
+            token_handle: *mut c_void,
+            token_information_class: u32,
+            token_information: *mut c_void,
+            token_information_length: u32,
+            return_length: *mut u32,
+        ) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut c_void;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    const TOKEN_QUERY: u32 = 0x0008;
+    const TOKEN_ELEVATION_CLASS: u32 = 20;
+
+    let Ok(info_len) = u32::try_from(std::mem::size_of::<TokenElevation>()) else {
+        return false;
+    };
+
+    let mut token_handle = std::ptr::null_mut();
+    // Safety: the pseudo-handle from `GetCurrentProcess` is always valid for
+    // querying the current token, and `token_handle` points to writable memory.
+    let opened =
+        unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token_handle) };
+    if opened == 0 {
+        return false;
+    }
+
+    let mut elevation = TokenElevation {
+        token_is_elevated: 0,
+    };
+    let mut returned_len = 0;
+    // Safety: `token_handle` came from `OpenProcessToken`, and both output
+    // buffers point to valid writable memory of the declared size.
+    let ok = unsafe {
+        GetTokenInformation(
+            token_handle,
+            TOKEN_ELEVATION_CLASS,
+            (&raw mut elevation).cast(),
+            info_len,
+            &raw mut returned_len,
+        )
+    };
+    // Safety: `token_handle` was successfully opened above and must be closed
+    // exactly once regardless of whether the token query succeeded.
+    let _ = unsafe { CloseHandle(token_handle) };
+
+    ok != 0 && elevation.token_is_elevated != 0
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn has_full_visibility_privileges() -> bool {
+    true
+}
+
+#[cfg(target_os = "linux")]
+const fn visibility_warning_message() -> &'static str {
+    "running without root privileges can hide sockets and container metadata; rerun with sudo for full visibility"
+}
+
+#[cfg(windows)]
+const fn visibility_warning_message() -> &'static str {
+    "running without Administrator privileges can hide sockets and process metadata; rerun in an elevated terminal for full visibility"
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+const fn visibility_warning_message() -> &'static str {
+    ""
 }
 
 #[cfg(test)]

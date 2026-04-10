@@ -33,6 +33,12 @@ portview --listen
 # Filter to a specific port
 portview --port 8080
 
+# Disable Docker/Podman and project-root enrichment
+portview --no-enrich
+
+# Lowest-overhead raw view
+portview --all --no-enrich
+
 # JSON output
 portview --json
 
@@ -130,6 +136,7 @@ cargo install portview
 | `--port <num>` | `-p`  | Filter results to the specified port number and bypass the smart filter |
 | `--no-header`  |       | Suppress the column header row                                          |
 | `--json`       |       | Output results as a JSON array                                          |
+| `--no-enrich`  |       | Disable Docker/Podman, project-root, and config-file enrichment         |
 | `--version`    | `-V`  | Print the version string and exit                                       |
 | `--help`       | `-h`  | Print usage information and exit                                        |
 
@@ -181,6 +188,8 @@ footer switches between wide and compact layouts based on available width.
 2. Config files in the project root (e.g. `next.config.mjs` -> Next.js)
 3. Process executable name (e.g. `nginx` -> Nginx)
 
+**Low-overhead mode:** `--no-enrich` disables Docker/Podman probing, project-root walking, config-file scanning, and command-line path fallback. Core socket data, users, uptime, and process-name detection still remain available. Combine it with `--all` for the rawest view.
+
 **Docker/Podman support:** Automatically detects running containers and maps their published ports to container names and images. Works via Docker socket (Linux, including common rootless socket paths) or named pipe (Windows). Podman is supported via its compatible REST API. On Linux, auto-discovery merges results from all reachable runtimes instead of stopping at the first response, and rootless Podman `rootlessport` listeners can fall back to local Podman metadata when the API socket is unavailable to the current process. The `DOCKER_HOST` environment variable is honoured when it specifies a `unix://` socket path, an `npipe://` named pipe path, or a `tcp://` address. If Podman is installed without an active API socket, start `podman.socket` or point `DOCKER_HOST` at a running `podman system service` endpoint.
 
 **Duplicate suppression:** Repeated rows from the same PID are collapsed, and known Docker proxy duplicates are collapsed into one row. Distinct worker PIDs and distinct non-proxy bind addresses on the same port stay visible.
@@ -190,6 +199,10 @@ footer switches between wide and compact layouts based on available width.
 ## Permissions
 
 portview runs without elevated privileges. Some sockets owned by other users or system processes may not appear in the output. Run with `sudo` (Linux) or as Administrator (Windows) for full visibility.
+
+When stderr is attached to a terminal, portview warns at runtime if it detects that the current session is not elevated.
+
+Deep enrichment may inspect executable paths, working directories, and absolute command-line paths to infer project roots. Use `--no-enrich` if you want to skip that extra metadata collection.
 
 ---
 
