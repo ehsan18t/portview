@@ -142,7 +142,19 @@ const CONFIG_PATTERNS: &[(&str, &str, ConfigMatchKind)] = &[
 /// Extension-based config patterns.
 const CONFIG_EXTENSIONS: &[(&str, &str)] = &[("csproj", ".NET"), ("fsproj", ".NET (F#)")];
 
-const PYTHON_ENTRY_FILES: &[&str] = &["app.py", "main.py", "server.py", "wsgi.py", "asgi.py"];
+const PYTHON_APP_FILE: &str = "app.py";
+const PYTHON_MAIN_FILE: &str = "main.py";
+const PYTHON_SERVER_FILE: &str = "server.py";
+const PYTHON_WSGI_FILE: &str = "wsgi.py";
+const PYTHON_ASGI_FILE: &str = "asgi.py";
+
+const PYTHON_ENTRY_FILES: &[&str] = &[
+    PYTHON_APP_FILE,
+    PYTHON_MAIN_FILE,
+    PYTHON_SERVER_FILE,
+    PYTHON_WSGI_FILE,
+    PYTHON_ASGI_FILE,
+];
 const PYTHON_DEPENDENCY_FILES: &[&str] = &[
     "pyproject.toml",
     "requirements.txt",
@@ -154,11 +166,11 @@ const PYTHON_DEPENDENCY_FILES: &[&str] = &[
 ];
 const PYTHON_PROJECT_FILES: &[&str] = &[
     "manage.py",
-    "app.py",
-    "main.py",
-    "server.py",
-    "wsgi.py",
-    "asgi.py",
+    PYTHON_APP_FILE,
+    PYTHON_MAIN_FILE,
+    PYTHON_SERVER_FILE,
+    PYTHON_WSGI_FILE,
+    PYTHON_ASGI_FILE,
     "pyproject.toml",
     "requirements.txt",
     "requirements-dev.txt",
@@ -799,5 +811,15 @@ mod tests {
     fn combined_all_none() {
         let result = detect(None, None, "svchost");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn python_project_files_cover_entry_files() {
+        for file_name in PYTHON_ENTRY_FILES {
+            assert!(
+                PYTHON_PROJECT_FILES.contains(file_name),
+                "{file_name} should stay in the broader Python project marker set"
+            );
+        }
     }
 }
