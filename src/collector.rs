@@ -19,6 +19,7 @@ use std::io::{BufRead, BufReader};
 
 use anyhow::Result;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use tracing::debug;
 
 use crate::docker::{self, ContainerPortMap};
 use crate::types::{PortEntry, Protocol, State};
@@ -109,6 +110,12 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
+    debug!(
+        deep_enrichment = options.deep_enrichment,
+        listeners = raw_listeners.len(),
+        tracked_pids = tracked_pids.len(),
+        "enumerated raw listeners"
+    );
 
     // `false` = do not remove previously-tracked dead processes. On a
     // freshly created System the internal map is empty, so this flag
@@ -180,6 +187,7 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
                 right.process.as_str(),
             ))
     });
+    debug!(entries = entries.len(), "finished socket collection");
     Ok(entries)
 }
 

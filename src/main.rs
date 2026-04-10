@@ -9,6 +9,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::Parser;
 use portview::{collector, display, filter};
+use tracing_subscriber::EnvFilter;
 
 /// Exit code for runtime errors (failed to enumerate sockets, write errors).
 /// Usage errors (invalid flags) are handled by clap with exit code 2.
@@ -62,11 +63,25 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
-    if let Err(e) = run() {
+    if let Err(e) = init_tracing().and_then(|()| run()) {
         eprintln!("error: {e:#}");
         return ExitCode::from(EXIT_RUNTIME_ERROR);
     }
     ExitCode::SUCCESS
+}
+
+fn init_tracing() -> Result<()> {
+    let filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new("off"))
+        .context("failed to build tracing filter")?;
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init()
+        .map_err(|error| anyhow::anyhow!("failed to initialize tracing subscriber: {error}"))?;
+
+    Ok(())
 }
 
 /// Application entry point, separated from `main()` for testability.

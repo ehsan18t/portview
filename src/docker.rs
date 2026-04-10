@@ -22,6 +22,7 @@ use std::{ffi::OsStr, ffi::c_void, os::windows::ffi::OsStrExt, os::windows::io::
 use std::fs;
 
 use serde::Deserialize;
+use tracing::debug;
 
 use crate::types::Protocol;
 
@@ -263,14 +264,23 @@ fn read_podman_network_namespace_path(config_path: &Path) -> Option<PathBuf> {
 #[cfg(target_os = "linux")]
 fn read_process_netns_paths(pid: u32) -> Vec<PathBuf> {
     let fd_dir = PathBuf::from("/proc").join(pid.to_string()).join("fd");
-    let Ok(entries) = fs::read_dir(fd_dir) else {
-        return Vec::new();
+    let entries = match fs::read_dir(&fd_dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            debug!(pid, fd_dir = %fd_dir.display(), %error, "failed to read process fd directory for rootless Podman lookup");
+            return Vec::new();
+        }
     };
 
     let mut netns_paths = HashSet::new();
     for entry in entries.flatten() {
-        let Ok(target) = fs::read_link(entry.path()) else {
-            continue;
+        let entry_path = entry.path();
+        let target = match fs::read_link(&entry_path) {
+            Ok(target) => target,
+            Err(error) => {
+                debug!(pid, fd_entry = %entry_path.display(), %error, "failed to read process fd symlink for rootless Podman lookup");
+                continue;
+            }
         };
         if is_podman_network_namespace_path(&target) {
             netns_paths.insert(target);
@@ -357,9 +367,15 @@ pub type DetectionHandle = std::sync::mpsc::Receiver<Option<ContainerPortMap>>;
 #[must_use]
 pub fn start_detection() -> DetectionHandle {
     let (tx, rx) = std::sync::mpsc::channel();
+    debug!("starting container runtime detection");
     std::thread::spawn(move || {
+        let result = query_daemon();
+        debug!(
+            port_mappings = result.as_ref().map_or(0, HashMap::len),
+            "finished container runtime detection"
+        );
         // Ignore send error: receiver may have timed out and been dropped.
-        drop(tx.send(query_daemon()));
+        drop(tx.send(result));
     });
     rx
 }
@@ -373,11 +389,24 @@ pub fn start_detection() -> DetectionHandle {
 #[allow(clippy::needless_pass_by_value)]
 #[must_use]
 pub fn await_detection(handle: DetectionHandle) -> ContainerPortMap {
-    handle
-        .recv_timeout(DAEMON_TIMEOUT)
-        .ok()
-        .flatten()
-        .unwrap_or_default()
+    match handle.recv_timeout(DAEMON_TIMEOUT) {
+        Ok(Some(container_map)) => container_map,
+        Ok(None) => {
+            debug!("container runtime detection returned no data");
+            ContainerPortMap::default()
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            debug!(
+                timeout_secs = DAEMON_TIMEOUT.as_secs(),
+                "container runtime detection timed out"
+            );
+            ContainerPortMap::default()
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            debug!("container runtime detection channel disconnected");
+            ContainerPortMap::default()
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -590,7 +619,10 @@ fn fetch_named_pipe_json(path: &str, deadline: std::time::Instant) -> Option<Str
                 wait_named_pipe(path, deadline)?;
                 continue;
             }
-            Err(_) => return None,
+            Err(error) => {
+                debug!(pipe = path, %error, "failed to open container runtime named pipe");
+                return None;
+            }
         };
 
         return send_http_request_windows(&mut stream, deadline);
@@ -619,11 +651,21 @@ fn unix_socket_paths(uid: u32, home: Option<PathBuf>) -> Vec<String> {
 fn fetch_unix_socket_json(path: &Path) -> Option<String> {
     use std::os::unix::net::UnixStream;
 
-    let mut stream = UnixStream::connect(path).ok()?;
+    let mut stream = match UnixStream::connect(path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            debug!(socket = %path.display(), %error, "failed to connect to container runtime socket");
+            return None;
+        }
+    };
     // Best-effort timeout; proceed even if it cannot be set.
     drop(stream.set_read_timeout(Some(DAEMON_TIMEOUT)));
     drop(stream.set_write_timeout(Some(DAEMON_TIMEOUT)));
-    send_http_request(&mut stream)
+    let response = send_http_request(&mut stream);
+    if response.is_none() {
+        debug!(socket = %path.display(), "container runtime socket returned no usable response");
+    }
+    response
 }
 
 fn send_http_request(stream: &mut (impl std::io::Read + std::io::Write)) -> Option<String> {
@@ -827,15 +869,37 @@ fn fetch_tcp_json(addr: &str) -> Option<String> {
     let mut stream = connect_tcp_stream(addr)?;
     drop(stream.set_read_timeout(Some(DAEMON_TIMEOUT)));
     drop(stream.set_write_timeout(Some(DAEMON_TIMEOUT)));
-    send_http_request(&mut stream)
+    let response = send_http_request(&mut stream);
+    if response.is_none() {
+        debug!(
+            tcp = addr,
+            "container runtime TCP endpoint returned no usable response"
+        );
+    }
+    response
 }
 
 fn connect_tcp_stream(addr: &str) -> Option<std::net::TcpStream> {
     use std::net::ToSocketAddrs;
 
-    addr.to_socket_addrs().ok()?.find_map(|socket_addr| {
-        std::net::TcpStream::connect_timeout(&socket_addr, DAEMON_TIMEOUT).ok()
-    })
+    let socket_addrs = match addr.to_socket_addrs() {
+        Ok(socket_addrs) => socket_addrs,
+        Err(error) => {
+            debug!(tcp = addr, %error, "failed to resolve container runtime TCP address");
+            return None;
+        }
+    };
+
+    for socket_addr in socket_addrs {
+        match std::net::TcpStream::connect_timeout(&socket_addr, DAEMON_TIMEOUT) {
+            Ok(stream) => return Some(stream),
+            Err(error) => {
+                debug!(%socket_addr, %error, "failed to connect to container runtime TCP address");
+            }
+        }
+    }
+
+    None
 }
 
 /// Pre-parsed HTTP response header metadata from a Docker daemon reply.

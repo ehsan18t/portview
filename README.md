@@ -190,6 +190,8 @@ footer switches between wide and compact layouts based on available width.
 
 **Low-overhead mode:** `--no-enrich` disables Docker/Podman probing, project-root walking, config-file scanning, and command-line path fallback. Core socket data, users, uptime, and process-name detection still remain available. Combine it with `--all` for the rawest view.
 
+**Debug diagnostics:** Set `RUST_LOG=debug` in your shell before running portview to emit structured diagnostics for container probing, rootless Podman lookup, and enrichment fallbacks. In PowerShell, use `$env:RUST_LOG = 'debug'; portview --all`. This stays off by default.
+
 **Docker/Podman support:** Automatically detects running containers and maps their published ports to container names and images. Works via Docker socket (Linux, including common rootless socket paths) or named pipe (Windows). Podman is supported via its compatible REST API. On Linux, auto-discovery merges results from all reachable runtimes instead of stopping at the first response, and rootless Podman `rootlessport` listeners can fall back to local Podman metadata when the API socket is unavailable to the current process. The `DOCKER_HOST` environment variable is honoured when it specifies a `unix://` socket path, an `npipe://` named pipe path, or a `tcp://` address. If Podman is installed without an active API socket, start `podman.socket` or point `DOCKER_HOST` at a running `podman system service` endpoint.
 
 **Duplicate suppression:** Repeated rows from the same PID are collapsed, and known Docker proxy duplicates are collapsed into one row. Distinct worker PIDs and distinct non-proxy bind addresses on the same port stay visible.
@@ -203,6 +205,8 @@ portview runs without elevated privileges. Some sockets owned by other users or 
 When stderr is attached to a terminal, portview warns at runtime if it detects that the current session is not elevated.
 
 Deep enrichment may inspect executable paths, working directories, and absolute command-line paths to infer project roots. Use `--no-enrich` if you want to skip that extra metadata collection.
+
+For environment-specific debugging, enable tracing with `RUST_LOG=debug` and rerun the command. That surfaces Docker/Podman probe failures and `/proc`-based enrichment misses on stderr.
 
 ---
 
