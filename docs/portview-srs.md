@@ -197,7 +197,7 @@ The application is written entirely in Rust on the stable toolchain. The minimum
 - **Build system:** Cargo (standard Rust build tool)
 - **Cross-compilation:** cargo-cross for producing Linux aarch64 and Windows x86_64 binaries from a single build machine
 - **CI/CD:** GitHub Actions with matrix builds across all three target triples
-- **Release artifacts:** Uploaded to GitHub Releases as .tar.gz for Linux and .zip for Windows
+- **Release artifacts:** Uploaded to GitHub Releases as .tar.gz for Linux and .exe for Windows
 
 ### 4.4 Project Structure
 

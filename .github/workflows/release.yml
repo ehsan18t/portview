@@ -1,6 +1,6 @@
 # portview - Release Pipeline
 # Manually triggered workflow that builds release binaries for all platforms,
-# packages them as .tar.gz / .zip / .deb / .rpm, and creates a draft release.
+# packages them as .tar.gz / .exe / .deb / .rpm, and creates a draft release.
 #
 # Trigger: Actions tab > Release > Run workflow > enter version tag (e.g. v0.1.0)
 
@@ -32,13 +32,16 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
+            asset_suffix: x86_64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
+            asset_suffix: aarch64
             cross: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            archive: zip
+            archive: exe
+            asset_suffix: x86_64
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -70,17 +73,14 @@ jobs:
           cp target/${{ matrix.target }}/release/portview staging/
           cp README.md LICENSE staging/
           cd staging
-          tar czf ../portview-${{ inputs.tag }}-${{ matrix.target }}.tar.gz *
+          tar czf ../portview-${{ inputs.tag }}-${{ matrix.asset_suffix }}.tar.gz *
 
-      # Package as zip (Windows)
-      - name: Package zip
-        if: matrix.archive == 'zip'
+      # Upload the raw executable (Windows)
+      - name: Package exe
+        if: matrix.archive == 'exe'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path staging -Force | Out-Null
-          Copy-Item target/${{ matrix.target }}/release/portview.exe staging/
-          Copy-Item README.md, LICENSE staging/
-          Compress-Archive -Path staging/* -DestinationPath portview-${{ inputs.tag }}-${{ matrix.target }}.zip
+          Copy-Item target/${{ matrix.target }}/release/portview.exe portview-${{ inputs.tag }}-${{ matrix.asset_suffix }}.exe
 
       # Build .deb package (Linux x86_64 only)
       - name: Build .deb package

@@ -76,14 +76,14 @@ Full view (`portview --full`):
 
 Download the latest release from the [Releases](https://github.com/ehsan18t/portview/releases) page.
 
-| Platform             | Package                                               |
-| -------------------- | ----------------------------------------------------- |
-| Linux x86-64         | `portview-<version>-x86_64-unknown-linux-gnu.tar.gz`  |
-| Linux x86-64 (.deb)  | `portview-<version>-amd64.deb`                        |
-| Linux x86-64 (.rpm)  | `portview-<version>-x86_64.rpm`                       |
-| Linux aarch64        | `portview-<version>-aarch64-unknown-linux-gnu.tar.gz` |
-| Linux aarch64 (.deb) | `portview-<version>-arm64.deb`                        |
-| Windows x86-64       | `portview-<version>-x86_64-pc-windows-msvc.zip`       |
+| Platform             | Package                             |
+| -------------------- | ----------------------------------- |
+| Linux x86-64         | `portview-<version>-x86_64.tar.gz`  |
+| Linux x86-64 (.deb)  | `portview-<version>-amd64.deb`      |
+| Linux x86-64 (.rpm)  | `portview-<version>-x86_64.rpm`     |
+| Linux aarch64        | `portview-<version>-aarch64.tar.gz` |
+| Linux aarch64 (.deb) | `portview-<version>-arm64.deb`      |
+| Windows x86-64       | `portview-<version>-x86_64.exe`     |
 
 For Debian/Ubuntu: `sudo dpkg -i portview-<version>-amd64.deb`
 For Fedora/RHEL: `sudo rpm -i portview-<version>-x86_64.rpm`
