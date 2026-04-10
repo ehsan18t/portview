@@ -822,4 +822,14 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn python_project_files_cover_dependency_files() {
+        for file_name in PYTHON_DEPENDENCY_FILES {
+            assert!(
+                PYTHON_PROJECT_FILES.contains(file_name),
+                "{file_name} should stay in the broader Python project marker set"
+            );
+        }
+    }
 }
