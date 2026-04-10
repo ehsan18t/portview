@@ -8,7 +8,7 @@
 #
 # What it checks:
 #   1. cargo fmt --check   — formatting
-#   2. cargo clippy        — lint violations (deny level from Cargo.toml)
+#   2. cross-target clippy - lint violations across Linux + Windows targets
 #   3. cargo test          — all tests pass
 #   4. cargo bench --no-run — benchmarks compile
 #   5. cargo build         — debug build compiles
@@ -62,15 +62,16 @@ if ! cargo fmt --all -- --check; then
 fi
 echo "  ✓ Formatting OK"
 
-# Gate 2: Clippy (uses deny-level lints from Cargo.toml)
-echo "→ [2/7] Running clippy..."
-if ! cargo clippy --all-targets -- -D warnings; then
+# Gate 2: Clippy across the supported Linux + Windows targets
+echo "→ [2/7] Running cross-target clippy..."
+if ! sh scripts/check-platform-clippy.sh; then
     echo ""
     echo "✗ CLIPPY FAILED"
-    echo "  Fix the lint errors above, then try pushing again."
+    echo "  Fix the lint errors above or install the missing rustup targets,"
+    echo "  then try pushing again."
     exit 1
 fi
-echo "  ✓ Clippy OK"
+echo "  ✓ Cross-target clippy OK"
 
 # Gate 3: Tests
 echo "→ [3/7] Running tests..."

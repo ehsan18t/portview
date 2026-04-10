@@ -23,16 +23,22 @@ if %ERRORLEVEL% neq 0 (
 )
 echo   OK Formatting
 
-REM Gate 2: Clippy
-echo -^> [2/7] Running clippy...
-cargo clippy --all-targets -- -D warnings
+REM Gate 2: Clippy across Linux + Windows targets
+echo -^> [2/7] Running cross-target clippy...
+where pwsh >nul 2>nul
+if %ERRORLEVEL% equ 0 (
+    pwsh -NoProfile -File scripts\check-platform-clippy.ps1
+) else (
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-platform-clippy.ps1
+)
 if %ERRORLEVEL% neq 0 (
     echo.
     echo X CLIPPY FAILED
-    echo   Fix the lint errors above, then try pushing again.
+    echo   Fix the lint errors above or install the missing rustup targets,
+    echo   then try pushing again.
     exit /b 1
 )
-echo   OK Clippy
+echo   OK Cross-target clippy
 
 REM Gate 3: Tests
 echo -^> [3/7] Running tests...

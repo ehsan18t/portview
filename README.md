@@ -198,6 +198,18 @@ portview runs without elevated privileges. Some sockets owned by other users or 
 ## Contributing
 
 See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for development setup and guidelines.
+Install both supported lint targets once before using the local Clippy hooks or
+helper scripts:
+
+```bash
+rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-msvc
+```
+
+The local cross-target Clippy helpers in `scripts/check-platform-clippy.sh` and
+`scripts/check-platform-clippy.ps1` lint the host target with full coverage and
+lint the other supported target's library and binary code so Linux-only and
+Windows-only cfg issues fail locally instead of waiting for CI.
+
 CI workflow actions are pinned to full commit SHAs for supply-chain security;
 preserve the trailing version comments when updating them.
 

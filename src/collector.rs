@@ -8,7 +8,9 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
 use std::ffi::CStr;
-use std::ffi::{OsStr, OsString};
+#[cfg(target_os = "linux")]
+use std::ffi::OsStr;
+use std::ffi::OsString;
 #[cfg(target_os = "linux")]
 use std::fs;
 #[cfg(unix)]
@@ -256,7 +258,8 @@ fn build_entry(l: &listeners::Listener, context: &mut CollectContext<'_>) -> Por
 }
 
 fn resolve_container(
-    context: &mut CollectContext<'_>,
+    #[cfg(target_os = "linux")] context: &mut CollectContext<'_>,
+    #[cfg(not(target_os = "linux"))] context: &CollectContext<'_>,
     socket: SocketAddr,
     proto: Protocol,
     pid: u32,

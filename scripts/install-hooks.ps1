@@ -52,14 +52,17 @@ Write-Host "    Types:  feat, fix, docs, style, refactor, perf, test, build, ci,
 Write-Host ""
 Write-Host "  Pre-commit (fast checks before each commit):" -ForegroundColor White
 Write-Host "    1. cargo fmt --check    (formatting)"
-Write-Host "    2. cargo clippy         (lints)"
+Write-Host "    2. cross-target clippy  (Linux + Windows cfg lints)"
 Write-Host "    3. cargo test           (tests)"
 Write-Host ""
 Write-Host "  Pre-push (full CI-equivalent checks before each push):" -ForegroundColor White
 Write-Host "    1. cargo fmt --check    (formatting)"
-Write-Host "    2. cargo clippy -D warnings (lints)"
+Write-Host "    2. cross-target clippy  (Linux + Windows cfg lints)"
 Write-Host "    3. cargo test           (tests)"
 Write-Host "    4. cargo bench --no-run (benchmark compile)"
 Write-Host "    5. cargo build          (debug build)"
 Write-Host "    6. cargo doc            (strict rustdoc checks)"
 Write-Host "    7. cargo deny check     (dependency audit)"
+Write-Host ""
+Write-Host "Install the supported lint targets once:" -ForegroundColor Cyan
+Write-Host "  rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-msvc"

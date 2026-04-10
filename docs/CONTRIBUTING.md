@@ -10,6 +10,11 @@ Thank you for your interest in contributing!
 
 - Rust stable toolchain (1.93+)
 - `cargo-deny` (optional, for dependency audit)
+- Supported lint targets:
+
+```bash
+rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-msvc
+```
 
 ### Clone and Build
 
@@ -36,21 +41,27 @@ bash scripts/install-hooks.sh
 Both scripts install pre-commit, pre-push, and commit-msg hooks that enforce
 quality gates locally before CI.
 
+The Clippy gate uses `scripts/check-platform-clippy.sh` on shell-based setups
+and `scripts/check-platform-clippy.ps1` on Windows PowerShell. The host target
+still runs with `--all-targets`, while the other supported target lints
+`--lib --bins` so Linux-only and Windows-only cfg issues fail locally without
+requiring a foreign C toolchain for Criterion's benchmark dependency.
+
 ---
 
 ## Quality Gates
 
 All of the following must pass before merging:
 
-| Gate | Command                       | Purpose                   |
-| ---- | ----------------------------- | ------------------------- |
-| 1    | `cargo fmt --check`           | Consistent formatting     |
-| 2    | `cargo clippy -- -D warnings` | Zero lint warnings        |
-| 3    | `cargo test`                  | All tests pass            |
-| 4    | `cargo bench --no-run`        | Benchmarks compile        |
-| 5    | `cargo build`                 | Debug build succeeds      |
-| 6    | `cargo doc --no-deps`         | Documentation builds      |
-| 7    | `cargo deny check`            | No vulnerable/banned deps |
+| Gate | Command                                                                  | Purpose                                             |
+| ---- | ------------------------------------------------------------------------ | --------------------------------------------------- |
+| 1    | `cargo fmt --check`                                                      | Consistent formatting                               |
+| 2    | `scripts/check-platform-clippy.sh` / `scripts/check-platform-clippy.ps1` | Zero lint warnings across Linux + Windows cfg paths |
+| 3    | `cargo test`                                                             | All tests pass                                      |
+| 4    | `cargo bench --no-run`                                                   | Benchmarks compile                                  |
+| 5    | `cargo build`                                                            | Debug build succeeds                                |
+| 6    | `cargo doc --no-deps`                                                    | Documentation builds                                |
+| 7    | `cargo deny check`                                                       | No vulnerable/banned deps                           |
 
 CI runs on every push to `main` **and** on every pull request targeting `main`,
 so cross-platform issues (Linux + Windows matrix) are caught before a PR is merged.
