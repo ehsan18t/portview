@@ -550,14 +550,18 @@ fn read_windows_tcp_table(address_family: u32) -> Option<Vec<u8>> {
             return None;
         }
 
-        let Ok(buffer_len) = usize::try_from(size) else {
+        // Pad the reported size by ~20% to account for new connections
+        // appearing between the size query and the actual read (TOCTOU).
+        let padded_size = size.saturating_add(size / 5).max(size.saturating_add(256));
+        let Ok(buffer_len) = usize::try_from(padded_size) else {
             return None;
         };
         let mut buffer = vec![0_u8; buffer_len];
+        let mut actual_size = padded_size;
         let result = unsafe {
             get_extended_tcp_table(
                 buffer.as_mut_ptr().cast(),
-                &raw mut size,
+                &raw mut actual_size,
                 0,
                 address_family,
                 TCP_TABLE_OWNER_PID_ALL,
