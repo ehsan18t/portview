@@ -416,7 +416,10 @@ fn extend_linux_tcp_state_index(path: &str, ipv6: bool, index: &mut TcpStateInde
         return;
     };
 
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+
+    while reader.read_line(&mut line).unwrap_or(0) > 0 {
         let parsed = if ipv6 {
             parse_linux_tcp6_table_entry(&line)
         } else {
@@ -426,6 +429,7 @@ fn extend_linux_tcp_state_index(path: &str, ipv6: bool, index: &mut TcpStateInde
         if let Some((socket, state)) = parsed {
             merge_tcp_state(index, socket, state);
         }
+        line.clear();
     }
 }
 
