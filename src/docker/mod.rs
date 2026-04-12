@@ -25,11 +25,13 @@ use crate::types::Protocol;
 
 // ── Public API re-exports ────────────────────────────────────────────
 
-pub use api::{parse_containers_json, short_container_id};
+// `parse_containers_json` is consumed by the criterion benchmark harness;
+// everything else is crate-private enrichment plumbing.
+pub use api::parse_containers_json;
 #[cfg(target_os = "linux")]
 pub(crate) use podman::is_podman_rootlessport_process;
 #[cfg(target_os = "linux")]
-pub use podman::{RootlessPodmanResolver, lookup_rootless_podman_container};
+pub(crate) use podman::{RootlessPodmanResolver, lookup_rootless_podman_container};
 
 /// Metadata about a running container that has published ports.
 #[derive(Debug, Clone, PartialEq, Eq)]
