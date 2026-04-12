@@ -194,7 +194,7 @@ fn print_help() {
     println!("      --json           Output results as a JSON array");
     println!("      --no-enrich      Disable Docker/Podman and project-root enrichment");
     println!("  -h, --help           Print help");
-    println!("  -V, --version        Print version");
+    println!("  -v, --version        Print version");
     println!();
     println!("Subcommand 'update' options:");
     println!("      --check          Only check for a new version; do not install");
