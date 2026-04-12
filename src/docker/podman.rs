@@ -83,7 +83,7 @@ pub fn lookup_rootless_podman_container(
     container
 }
 
-const fn is_podman_rootlessport_process(process_name: &str) -> bool {
+pub const fn is_podman_rootlessport_process(process_name: &str) -> bool {
     process_name.eq_ignore_ascii_case("rootlessport")
 }
 

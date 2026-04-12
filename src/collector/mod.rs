@@ -367,15 +367,10 @@ fn rootless_podman_process_name<'a>(
     process_name: &'a str,
     exe_name: Option<&'a str>,
 ) -> Option<&'a str> {
-    if is_rootless_podman_process(process_name) {
+    if docker::is_podman_rootlessport_process(process_name) {
         return Some(process_name);
     }
-    exe_name.filter(|name| is_rootless_podman_process(name))
-}
-
-#[cfg(target_os = "linux")]
-const fn is_rootless_podman_process(process_name: &str) -> bool {
-    process_name.eq_ignore_ascii_case("rootlessport")
+    exe_name.filter(|name| docker::is_podman_rootlessport_process(name))
 }
 
 // ── State resolution ─────────────────────────────────────────────────

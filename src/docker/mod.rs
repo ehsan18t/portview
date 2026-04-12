@@ -27,6 +27,8 @@ use crate::types::Protocol;
 
 pub use api::{parse_containers_json, short_container_id};
 #[cfg(target_os = "linux")]
+pub(crate) use podman::is_podman_rootlessport_process;
+#[cfg(target_os = "linux")]
 pub use podman::{RootlessPodmanResolver, lookup_rootless_podman_container};
 
 /// Metadata about a running container that has published ports.
