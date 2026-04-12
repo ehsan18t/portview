@@ -347,7 +347,9 @@ fn lookup_container<'a>(
     // different address than the container. When the port matches AND the
     // process is a known Docker proxy, try every container mapped to this
     // port+proto regardless of the published IP.
-    if matches_docker_proxy_process(process_name, exe_name) {
+    if dedup::is_docker_proxy_process(process_name)
+        || exe_name.is_some_and(dedup::is_docker_proxy_process)
+    {
         return container_map
             .iter()
             .find(|((_, port, p), _)| *port == socket.port() && *p == proto)
@@ -355,11 +357,6 @@ fn lookup_container<'a>(
     }
 
     None
-}
-
-fn matches_docker_proxy_process(process_name: &str, exe_name: Option<&str>) -> bool {
-    dedup::is_docker_proxy_process(process_name)
-        || exe_name.is_some_and(dedup::is_docker_proxy_process)
 }
 
 #[cfg(target_os = "linux")]
