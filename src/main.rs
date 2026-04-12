@@ -100,17 +100,23 @@ fn init_tracing() -> Result<()> {
 
 /// Normalize CLI arguments to lowercase for case-insensitive matching.
 ///
-/// Skips argv\[0\] (the program name/path). All other arguments are
-/// lowercased. This is safe because portview has no string-valued
-/// arguments — only numeric port values, flags, and subcommand names,
-/// none of which are affected by lowercasing.
+/// Replaces argv\[0\] with the fixed string `"portview"` and lowercases
+/// every remaining argument. Overwriting argv\[0\] is intentional: the
+/// OS-provided value can be set to arbitrary text by a parent process
+/// (e.g. via `execve`), and clap only uses it cosmetically for the
+/// program name in `--help` output. Pinning it to a constant keeps that
+/// output deterministic and ensures no untrusted argv\[0\] data flows
+/// into argument parsing.
+///
+/// Lowercasing the remaining arguments is safe because portview has no
+/// string-valued arguments — only numeric port values, flags, and
+/// subcommand names, none of which are affected by lowercasing.
 fn normalize_args() -> Vec<OsString> {
-    std::env::args_os()
-        .enumerate()
-        .map(|(i, arg)| {
-            if i == 0 {
-                return arg;
-            }
+    // Skip the OS-provided argv[0] and substitute a known-safe constant
+    // so clap's help output is deterministic regardless of how the
+    // binary was launched.
+    std::iter::once(OsString::from("portview"))
+        .chain(std::env::args_os().skip(1).map(|arg| {
             // Convert to UTF-8 for lowercasing; fall back to original if
             // the argument contains non-UTF-8 bytes (unlikely on any
             // supported platform).
@@ -118,7 +124,7 @@ fn normalize_args() -> Vec<OsString> {
                 |original| original,
                 |s| OsString::from(s.to_ascii_lowercase()),
             )
-        })
+        }))
         .collect()
 }
 

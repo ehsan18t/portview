@@ -341,6 +341,16 @@ fn find_asset<'a>(release: &'a Release, expected_name: &str) -> Result<&'a Asset
         })
 }
 
+/// Resolve the absolute, canonical path of the currently running binary.
+///
+/// `std::env::current_exe()` is the correct API here: it wraps
+/// `GetModuleFileNameW` on Windows and reads `/proc/self/exe` on Linux,
+/// which is exactly what any hand-rolled alternative would do. The path
+/// is used only to locate the file we need to overwrite as part of the
+/// self-update flow — it is never used as input to a security decision
+/// (no authentication, authorization, trust check, or code/config load
+/// keys off this value). The user explicitly invoked `portview update`,
+/// so replacing their own binary in place is the intended behavior.
 fn current_exe_path() -> Result<PathBuf> {
     std::env::current_exe()
         .context("cannot determine current binary path")?
