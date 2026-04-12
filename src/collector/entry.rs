@@ -128,7 +128,7 @@ fn process_executable_name(exe_path: Option<&Path>) -> Option<&str> {
 fn resolve_state(l: &listeners::Listener, tcp_states: &TcpStateIndex) -> State {
     match l.protocol {
         listeners::Protocol::TCP => tcp_states.get(&l.socket).copied().unwrap_or(State::Listen),
-        listeners::Protocol::UDP => State::Unknown,
+        listeners::Protocol::UDP => State::NotApplicable,
     }
 }
 
