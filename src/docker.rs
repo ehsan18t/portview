@@ -719,7 +719,7 @@ fn read_response_headers(reader: &mut impl BufRead) -> Option<ParsedHeaders> {
         }
     }
 
-    let mut headers_buf = [httparse::EMPTY_HEADER; 32];
+    let mut headers_buf = [httparse::EMPTY_HEADER; 64];
     let mut response = httparse::Response::new(&mut headers_buf);
 
     if response.parse(&raw).ok()?.is_partial() {
@@ -817,7 +817,7 @@ fn send_http_request_windows(
 
     stream.write_all(CONTAINERS_HTTP_REQUEST).ok()?;
 
-    let mut response = Vec::new();
+    let mut response = Vec::with_capacity(8192);
     let mut chunk = [0_u8; 8192];
     let mut headers: Option<ParsedHeaders> = None;
 
@@ -1010,7 +1010,7 @@ fn parse_transfer_encoding(value: &str) -> TransferEncoding {
 /// been received. Uses `httparse::Response::parse` for robust parsing.
 #[cfg(any(windows, test))]
 fn parse_response_headers(response: &[u8]) -> Option<ParsedHeaders> {
-    let mut headers_buf = [httparse::EMPTY_HEADER; 32];
+    let mut headers_buf = [httparse::EMPTY_HEADER; 64];
     let mut parsed = httparse::Response::new(&mut headers_buf);
 
     let Ok(httparse::Status::Complete(body_offset)) = parsed.parse(response) else {
