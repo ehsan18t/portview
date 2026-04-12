@@ -36,50 +36,93 @@ const REPO_NAME: &str = "portview";
 /// the result without downloading or replacing anything.
 pub fn run(check_only: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
-    eprintln!("Current version: {current}");
-    eprint!("Checking for updates... ");
-
-    let release = fetch_latest_release().context("failed to check for updates")?;
+    let release = check_for_update(current)?;
 
     let remote = &release.tag_name;
 
-    match compare_versions(current, remote) {
-        Ordering::Less => {}
-        Ordering::Equal | Ordering::Greater => {
-            eprintln!("up to date.");
-            eprintln!("portview is already up to date ({current}).");
-            return Ok(());
-        }
+    if !is_update_available(current, remote) {
+        print_up_to_date(current);
+        return Ok(());
     }
 
-    eprintln!("new version available!");
-    eprintln!("New version: {remote} (current: {current})");
+    print_available_update(current, remote);
 
     if check_only {
         print_manual_download_info(&release);
         return Ok(());
     }
 
+    install_update(&release, current, remote)
+}
+
+fn check_for_update(current: &str) -> Result<Release> {
+    eprintln!("Current version: {current}");
+    eprint!("Checking for updates... ");
+    fetch_latest_release().context("failed to check for updates")
+}
+
+fn is_update_available(current: &str, remote: &str) -> bool {
+    compare_versions(current, remote) == Ordering::Less
+}
+
+fn print_up_to_date(current: &str) {
+    eprintln!("up to date.");
+    eprintln!("portview is already up to date ({current}).");
+}
+
+fn print_available_update(current: &str, remote: &str) {
+    eprintln!("new version available!");
+    eprintln!("New version: {remote} (current: {current})");
+}
+
+fn install_update(release: &Release, current: &str, remote: &str) -> Result<()> {
     match detect_platform()? {
-        Platform::WindowsExe => {
-            apply_asset_update(&release, remote, "exe", download_and_replace_windows)?;
-            eprintln!("Updated portview: {current} -> {remote}");
+        Platform::WindowsExe => install_release_asset(
+            release,
+            current,
+            remote,
+            "exe",
+            download_and_replace_windows,
+        ),
+        Platform::LinuxTarGz => install_release_asset(
+            release,
+            current,
+            remote,
+            "tar.gz",
+            download_and_replace_linux_tar,
+        ),
+        Platform::LinuxDeb => {
+            notify_package_managed(release, "dpkg (Debian/Ubuntu)");
+            Ok(())
         }
-        Platform::LinuxTarGz => {
-            apply_asset_update(&release, remote, "tar.gz", download_and_replace_linux_tar)?;
-            eprintln!("Updated portview: {current} -> {remote}");
+        Platform::LinuxRpm => {
+            notify_package_managed(release, "rpm (Fedora/RHEL)");
+            Ok(())
         }
-        Platform::LinuxDeb => notify_package_managed(&release, "dpkg (Debian/Ubuntu)"),
-        Platform::LinuxRpm => notify_package_managed(&release, "rpm (Fedora/RHEL)"),
         Platform::Unsupported => {
-            eprintln!();
-            eprintln!("WARNING: Auto-update is not available on this platform.");
-            eprintln!("Please download the new version manually:");
-            print_manual_download_info(&release);
+            notify_unsupported_platform(release);
+            Ok(())
         }
     }
+}
 
+fn install_release_asset(
+    release: &Release,
+    current: &str,
+    remote: &str,
+    ext: &str,
+    install: fn(&str, &Path) -> Result<()>,
+) -> Result<()> {
+    apply_asset_update(release, remote, ext, install)?;
+    eprintln!("Updated portview: {current} -> {remote}");
     Ok(())
+}
+
+fn notify_unsupported_platform(release: &Release) {
+    eprintln!();
+    eprintln!("WARNING: Auto-update is not available on this platform.");
+    eprintln!("Please download the new version manually:");
+    print_manual_download_info(release);
 }
 
 fn apply_asset_update(
@@ -180,27 +223,11 @@ struct Asset {
 /// Fails with a descriptive message if curl is not installed or exits
 /// with a non-zero status.
 fn curl_get_string(url: &str) -> Result<String> {
-    let version = env!("CARGO_PKG_VERSION");
-    let output = ProcessCommand::new("curl")
-        .args([
-            "--silent",
-            "--show-error",
-            "--fail",
-            "--location",
-            "--max-time",
-            "30",
-            "--header",
-            "Accept: application/vnd.github+json",
-            "--header",
-            &format!("User-Agent: portview/{version}"),
-            url,
-        ])
-        .output()
-        .context(
-            "failed to run curl. Is curl installed?\n  \
+    let output = curl_api_command(url).output().context(
+        "failed to run curl. Is curl installed?\n  \
              On Windows 10+ curl ships with the OS.\n  \
              On Linux install it via your package manager (e.g. apt install curl).",
-        )?;
+    )?;
 
     if !output.status.success() {
         return Err(api_curl_error(&output, url));
@@ -211,21 +238,7 @@ fn curl_get_string(url: &str) -> Result<String> {
 
 /// Download a file to a local path using curl.
 fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
-    let version = env!("CARGO_PKG_VERSION");
-    let output = ProcessCommand::new("curl")
-        .args([
-            "--silent",
-            "--show-error",
-            "--fail",
-            "--location",
-            "--max-time",
-            "120",
-            "--header",
-            &format!("User-Agent: portview/{version}"),
-            "--output",
-        ])
-        .arg(dest)
-        .arg(url)
+    let output = curl_download_command(url, dest)
         .output()
         .context("failed to run curl for download")?;
 
@@ -235,6 +248,36 @@ fn curl_download_file(url: &str, dest: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn base_curl_command(timeout_seconds: &str) -> ProcessCommand {
+    let version = env!("CARGO_PKG_VERSION");
+    let mut command = ProcessCommand::new("curl");
+    command
+        .arg("--silent")
+        .arg("--show-error")
+        .arg("--fail")
+        .arg("--location")
+        .arg("--max-time")
+        .arg(timeout_seconds)
+        .arg("--header")
+        .arg(format!("User-Agent: portview/{version}"));
+    command
+}
+
+fn curl_api_command(url: &str) -> ProcessCommand {
+    let mut command = base_curl_command("30");
+    command
+        .arg("--header")
+        .arg("Accept: application/vnd.github+json")
+        .arg(url);
+    command
+}
+
+fn curl_download_command(url: &str, dest: &Path) -> ProcessCommand {
+    let mut command = base_curl_command("120");
+    command.arg("--output").arg(dest).arg(url);
+    command
 }
 
 /// Extract the exit code and stderr text from a failed curl invocation.
@@ -490,68 +533,90 @@ fn download_and_replace_linux_tar(url: &str, binary_path: &Path) -> Result<()> {
     let temp_archive = temp_path_beside(binary_path, ".tar.gz")?;
     let extract_dir = temp_path_beside(binary_path, ".extract")?;
 
-    curl_download_file(url, &temp_archive)?;
-    verify_min_size(&temp_archive, 1024, "archive")?;
-
-    // Extract via the system `tar` command (ships with every Linux distro).
-    // This avoids a dependency on the `tar` and `flate2` Rust crates.
-    if extract_dir.exists() {
-        drop(std::fs::remove_dir_all(&extract_dir));
-    }
-    std::fs::create_dir_all(&extract_dir).with_context(|| {
-        format!(
-            "failed to create extraction directory: {}",
-            extract_dir.display()
-        )
-    })?;
-
-    let status = ProcessCommand::new("tar")
-        .arg("-xzf")
-        .arg(&temp_archive)
-        .arg("-C")
-        .arg(&extract_dir)
-        .status()
-        .context(
-            "failed to run tar. Is tar installed?\n  \
-             On Linux install it via your package manager (e.g. apt install tar).",
-        )?;
-
-    // Clean up archive regardless of extraction outcome
-    drop(std::fs::remove_file(&temp_archive));
-
-    if !status.success() {
-        drop(std::fs::remove_dir_all(&extract_dir));
-        bail!(
-            "tar extraction failed (exit code {}).",
-            status.code().unwrap_or(-1)
-        );
-    }
-
-    // Locate the extracted `portview` binary (may be at root or in a subdirectory)
-    let temp_binary = find_portview_in_dir(&extract_dir).with_context(|| {
-        format!(
-            "Archive does not contain a 'portview' binary: {}",
-            extract_dir.display()
-        )
-    })?;
+    download_archive(url, &temp_archive)?;
+    let temp_binary = extract_portview_binary(&temp_archive, &extract_dir)?;
 
     // Set executable permission
     let permissions = std::fs::Permissions::from_mode(0o755);
     std::fs::set_permissions(&temp_binary, permissions)
         .context("failed to set executable permission on updated binary")?;
 
-    // Atomic replace: rename extracted binary over current binary
-    let rename_result = std::fs::rename(&temp_binary, binary_path).with_context(|| {
-        format!(
-            "Failed to replace binary. Try running with sudo.\n  Path: {}",
-            binary_path.display()
-        )
-    });
+    let rename_result = replace_linux_binary(&temp_binary, binary_path);
 
     // Best-effort cleanup of extraction directory
     drop(std::fs::remove_dir_all(&extract_dir));
 
     rename_result
+}
+
+#[cfg(unix)]
+fn download_archive(url: &str, archive_path: &Path) -> Result<()> {
+    curl_download_file(url, archive_path)?;
+    verify_min_size(archive_path, 1024, "archive")
+}
+
+#[cfg(unix)]
+fn extract_portview_binary(archive_path: &Path, extract_dir: &Path) -> Result<PathBuf> {
+    recreate_directory(extract_dir)?;
+
+    let extraction_result = extract_archive_with_tar(archive_path, extract_dir).and_then(|()| {
+        find_portview_in_dir(extract_dir).with_context(|| {
+            format!(
+                "Archive does not contain a 'portview' binary: {}",
+                extract_dir.display()
+            )
+        })
+    });
+
+    drop(std::fs::remove_file(archive_path));
+    if extraction_result.is_err() {
+        drop(std::fs::remove_dir_all(extract_dir));
+    }
+
+    extraction_result
+}
+
+#[cfg(unix)]
+fn recreate_directory(path: &Path) -> Result<()> {
+    if path.exists() {
+        drop(std::fs::remove_dir_all(path));
+    }
+
+    std::fs::create_dir_all(path)
+        .with_context(|| format!("failed to create extraction directory: {}", path.display()))
+}
+
+#[cfg(unix)]
+fn extract_archive_with_tar(archive_path: &Path, extract_dir: &Path) -> Result<()> {
+    let status = ProcessCommand::new("tar")
+        .arg("-xzf")
+        .arg(archive_path)
+        .arg("-C")
+        .arg(extract_dir)
+        .status()
+        .context(
+            "failed to run tar. Is tar installed?\n  \
+             On Linux install it via your package manager (e.g. apt install tar).",
+        )?;
+
+    if !status.success() {
+        bail!(
+            "tar extraction failed (exit code {}).",
+            status.code().unwrap_or(-1)
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn replace_linux_binary(temp_binary: &Path, binary_path: &Path) -> Result<()> {
+    std::fs::rename(temp_binary, binary_path).with_context(|| {
+        format!(
+            "Failed to replace binary. Try running with sudo.\n  Path: {}",
+            binary_path.display()
+        )
+    })
 }
 
 /// Recursively search `dir` for a file named `portview` and return its path.
