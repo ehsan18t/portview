@@ -245,24 +245,20 @@ fn curl_failure_parts(output: &Output) -> (i32, std::borrow::Cow<'_, str>) {
 fn api_curl_error(output: &Output, url: &str) -> Error {
     let (code, stderr) = curl_failure_parts(output);
 
-    // curl exit code 22 = HTTP error (--fail flag)
-    if code == 22 {
-        if stderr.contains("403") || stderr.contains("429") {
-            return anyhow::anyhow!(
-                "GitHub API rate limit reached. Try again later.\n  URL: {url}"
-            );
-        }
-        if stderr.contains("404") {
-            return anyhow::anyhow!(
-                "No releases found for {REPO_OWNER}/{REPO_NAME}.\n  URL: {url}"
-            );
-        }
+    // curl exit code 22 = HTTP error (--fail flag); any other code is a
+    // transport-level failure (network, DNS, timeout, missing binary).
+    if code != 22 {
         return anyhow::anyhow!(
-            "GitHub API returned an HTTP error.\n  URL: {url}\n  Detail: {stderr}"
+            "curl failed (exit code {code}).\n  URL: {url}\n  Detail: {stderr}"
         );
     }
-
-    anyhow::anyhow!("curl failed (exit code {code}).\n  URL: {url}\n  Detail: {stderr}")
+    if stderr.contains("403") || stderr.contains("429") {
+        return anyhow::anyhow!("GitHub API rate limit reached. Try again later.\n  URL: {url}");
+    }
+    if stderr.contains("404") {
+        return anyhow::anyhow!("No releases found for {REPO_OWNER}/{REPO_NAME}.\n  URL: {url}");
+    }
+    anyhow::anyhow!("GitHub API returned an HTTP error.\n  URL: {url}\n  Detail: {stderr}")
 }
 
 fn fetch_latest_release() -> Result<Release> {
@@ -320,19 +316,16 @@ fn compare_versions(current: &str, remote: &str) -> Ordering {
 
     let c = parse(current);
     let r = parse(remote);
+    let len = c.len().max(r.len());
 
-    let max_len = c.len().max(r.len());
-
-    for i in 0..max_len {
-        let cv = c.get(i).copied().unwrap_or(0);
-        let rv = r.get(i).copied().unwrap_or(0);
-        match cv.cmp(&rv) {
-            Ordering::Equal => {}
-            other => return other,
-        }
-    }
-
-    Ordering::Equal
+    (0..len)
+        .map(|i| {
+            let cv = c.get(i).copied().unwrap_or(0);
+            let rv = r.get(i).copied().unwrap_or(0);
+            cv.cmp(&rv)
+        })
+        .find(|o| *o != Ordering::Equal)
+        .unwrap_or(Ordering::Equal)
 }
 
 // ---------------------------------------------------------------------------
@@ -460,40 +453,45 @@ fn download_and_replace_linux_tar(url: &str, binary_path: &Path) -> Result<()> {
 
 #[cfg(unix)]
 fn extract_portview_binary(archive_path: &Path, dest: &Path) -> Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-
     let file = std::fs::File::open(archive_path)
         .with_context(|| format!("failed to open archive: {}", archive_path.display()))?;
     let decoder = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(decoder);
-
-    for entry_result in archive
+    let entries = archive
         .entries()
-        .context("failed to read tar archive entries")?
-    {
+        .context("failed to read tar archive entries")?;
+
+    for entry_result in entries {
         let mut entry = entry_result.context("failed to read tar entry")?;
-        let entry_path = entry.path().context("failed to read tar entry path")?;
-        let file_name = entry_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        if file_name == "portview" {
-            let mut out_file = std::fs::File::create(dest)
-                .with_context(|| format!("failed to create temp file: {}", dest.display()))?;
-            std::io::copy(&mut entry, &mut out_file)
-                .context("failed to extract portview binary from archive")?;
-            out_file.flush().context("failed to flush temp file")?;
-
-            std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))
-                .context("failed to set executable permission on updated binary")?;
-            return Ok(());
+        if entry_is_portview(&entry)? {
+            return write_executable(&mut entry, dest);
         }
     }
 
     drop(std::fs::remove_file(dest));
     bail!("Archive does not contain a 'portview' binary. Download manually.")
+}
+
+/// Return true if the tar entry's basename is exactly `portview`.
+#[cfg(unix)]
+fn entry_is_portview<R: std::io::Read>(entry: &tar::Entry<'_, R>) -> Result<bool> {
+    let path = entry.path().context("failed to read tar entry path")?;
+    Ok(path.file_name().and_then(|n| n.to_str()) == Some("portview"))
+}
+
+/// Write `src` to `dest`, flush it, and mark it executable (mode 0o755).
+#[cfg(unix)]
+fn write_executable<R: std::io::Read>(src: &mut R, dest: &Path) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut out_file = std::fs::File::create(dest)
+        .with_context(|| format!("failed to create temp file: {}", dest.display()))?;
+    std::io::copy(src, &mut out_file).context("failed to extract portview binary from archive")?;
+    out_file.flush().context("failed to flush temp file")?;
+    std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))
+        .context("failed to set executable permission on updated binary")?;
+    Ok(())
 }
 
 /// Verify a downloaded file meets a minimum size; remove it and bail otherwise.
