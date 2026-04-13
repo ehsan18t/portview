@@ -1,22 +1,27 @@
 <div align="center">
-  <div style="display: flex; justify-content: center; align-items: center; gap: 12px;">
-    <img src="assets/icon.png" height="56px" alt="Release Version" />
-    <span style="font-size: 56px">PortLens</span>
-  </div>
-  <strong>A cross-platform CLI tool that lists open network ports and their associated processes</strong>
-</div>
-<br>
-<div align="center">
-  <!-- Code Quality -->
-    <a href="https://app.codacy.com/gh/ehsan18t/portview/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade">
-        <img src="https://app.codacy.com/project/badge/Grade/e452100983664ea3a02da32b5c4bb21f"/>
-    </a>
-  <!-- Release Version -->
-    <!-- <img src="https://img.shields.io/github/tag/ehsan18t/portlens?color=blue&label=Release&style=for-the-badge" alt="Release Version" /> -->
-  <!-- Download counts -->
-    <!-- <img src="https://downloads-counter-github-release.ahsan-khan.workers.dev/badge?owner=ehsan18t&repo=portlens&label=DOWNLOADS" alt="Download Count" /> -->
-</div>
-<br>
+  <br>
+  <img src="assets/icon.png" height="96" alt="PortLens" />
+  <h1>PortLens</h1>
+  <p><strong>A cross-platform CLI tool that lists open network ports and their associated processes</strong></p>
+  <br>
+
+  <a href="https://app.codacy.com/gh/ehsan18t/portlens/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade">
+    <img src="https://app.codacy.com/project/badge/Grade/e452100983664ea3a02da32b5c4bb21f" alt="Code Quality" />
+  </a>
+  &nbsp;
+  <a href="https://github.com/ehsan18t/portlens/releases/latest">
+    <img src="https://img.shields.io/github/v/tag/ehsan18t/portlens?color=blue&label=Release" alt="Release" />
+  </a>
+  &nbsp;
+  <a href="https://github.com/ehsan18t/portlens/releases">
+    <img src="https://img.shields.io/github/downloads/ehsan18t/portlens/total?label=Downloads&color=brightgreen" alt="Downloads" />
+  </a>
+  &nbsp;
+  <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-informational" alt="Platform" />
+  &nbsp;
+  <img src="https://img.shields.io/badge/License-MIT-success" alt="License" />
+  <br><br>
+</br>
 
 
 ## Quick Start
