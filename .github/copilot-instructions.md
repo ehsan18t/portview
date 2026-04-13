@@ -54,18 +54,25 @@ src/
   main.rs        — entry point: CLI parsing, command dispatch
   lib.rs         — library crate root: module re-exports for benchmarks
   types.rs       — PortEntry struct shared across all modules
-  collector.rs   — calls listeners + sysinfo to build Vec<PortEntry>
+   collector/     — socket enumeration, deduplication, user/process enrichment
   filter.rs      — applies user-specified filters before display
-  display.rs     — renders Vec<PortEntry> as a table or JSON
+   display/       — table, JSON, terminal-width, and tips rendering
+   docker/        — Docker/Podman daemon transport and container metadata
+   kill/          — process/container target resolution and termination
+   update.rs      — GitHub release checking and self-update logic
+   framework.rs   — app/framework detection from images, configs, processes
+   project.rs     — project-root detection via cwd/cmd marker walk
 ```
 
 - **Do not create new modules** without explicit human approval.
 - **Do not add new dependencies** without explicit human approval.
   If a feature can be implemented with `std` or existing deps, do that.
-- `collector.rs` owns all OS interaction (socket enumeration, process lookup).
-  Never scatter platform-specific calls across other modules.
-- `filter.rs` owns all filtering logic. `display.rs` owns all rendering logic.
-  Respect these boundaries.
+- The `collector/` module owns socket enumeration, deduplication, and process
+   metadata lookup. Never scatter that logic across unrelated modules.
+- `filter.rs` owns all filtering logic. The `display/` module owns rendering
+   logic. Respect these boundaries.
+- The `docker/` module owns container daemon communication and port-to-container
+   matching. The `kill/` module owns target resolution and termination flows.
 
 ---
 
@@ -153,7 +160,7 @@ docs: update README with installation instructions
 | Hook         | Gates                                                                         |
 | ------------ | ----------------------------------------------------------------------------- |
 | `pre-commit` | `cargo fmt --check`, `cargo clippy`, `cargo test`                             |
-| `pre-push`   | 6-gate quality gate (fmt, clippy, test, docs, deny if installed, debug build) |
+| `pre-push`   | 7-gate quality gate (fmt, clippy, test, bench compile, debug build, docs, deny if installed) |
 | `commit-msg` | Conventional Commits format validation                                        |
 
 ---
@@ -174,11 +181,12 @@ docs: update README with installation instructions
 
 ## 10 · CI Pipeline
 
-CI runs on **pull requests to `main`** only. Two jobs:
+CI runs on pushes to `main` and pull requests targeting `main`. Three jobs:
 
 1. **quality-gate** (Linux + Windows matrix) — fmt, clippy, test, bench compile,
    debug build, cargo doc
-2. **audit** — `cargo deny check`
+2. **bench-regression** — Linux-only advisory Criterion comparison on PRs
+3. **audit** — `cargo deny check`
 
 All gates must pass before merge. See `.github/workflows/ci.yml`.
 
@@ -223,7 +231,7 @@ All gates must pass before merge. See `.github/workflows/ci.yml`.
 ### Adding a new output column:
 
 1. Add the field to `PortEntry` in `types.rs`.
-2. Populate it in `collector.rs`.
-3. Render it in `display.rs` (both table and JSON).
+2. Populate it in the relevant `collector/` submodule.
+3. Render it in the `display/` module (table and JSON paths as needed).
 4. Update README.md example output.
 5. Add tests.
