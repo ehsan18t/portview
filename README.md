@@ -269,12 +269,21 @@ For environment-specific debugging, enable tracing with `RUST_LOG=debug` and rer
 
 ## Exit Codes
 
+<<<<<<< HEAD
 | Code | Meaning                                                                     |
 | ---- | --------------------------------------------------------------------------- |
 | 0    | Success                                                                     |
 | 1    | Runtime error (socket enumeration, I/O, or at least one kill target failed) |
 | 2    | Usage error (invalid flag combination or missing required argument)         |
 | 3    | `kill` selector matched no live process                                     |
+=======
+| Code | Meaning                                                             |
+| ---- | ------------------------------------------------------------------- |
+| 0    | Success                                                             |
+| 1    | Runtime error (socket enumeration, I/O, or at least one kill target failed) |
+| 2    | Usage error (invalid flag combination or missing required argument) |
+| 3    | `kill` selector matched no live process                             |
+>>>>>>> edc69d3 (docs: document kill subcommand and exit code 3)
 
 ---
 
