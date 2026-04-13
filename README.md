@@ -172,16 +172,18 @@ portlens kill --pid 12345 --dry-run --json
 portlens kill --pid 12345 --json
 ```
 
-| Flag           | Short | Description                                                                 |
-| -------------- | ----- | --------------------------------------------------------------------------- |
+| Flag           | Short | Description                                                                  |
+| -------------- | ----- | ---------------------------------------------------------------------------- |
 | `--port <num>` | `-p`  | Kill every process using this local port (dedups IPv4/IPv6 and workers)     |
-| `--pid <num>`  |       | Kill the specified PID                                                      |
-| `--force`      | `-f`  | Forceful termination (SIGKILL on Unix; no-op on Windows — already forceful) |
-| `--yes`        | `-y`  | Skip interactive confirmation                                               |
-| `--dry-run`    |       | List resolved targets without signaling anything                            |
-| `--json`       |       | Emit the kill report or dry-run target list as JSON                         |
+| `--pid <num>`  |       | Kill the specified PID                                                       |
+| `--force`      | `-f`  | Forceful termination (SIGKILL on Unix; no-op on Windows - already forceful) |
+| `--yes`        | `-y`  | Skip interactive confirmation                                                |
+| `--dry-run`    |       | List resolved targets without signaling anything                             |
+| `--json`       |       | Emit the kill report or dry-run target list as JSON                          |
 
 Safety: PortLens refuses to kill PID 0 (kernel/idle), PID 1 (init) on Unix, PID 4 (System) on Windows, and its own PID. Permission errors are reported per-PID with a hint to retry elevated; already-exited processes are treated as idempotent successes.
+
+**Container-aware kill:** When `--port` targets a port published by a Docker or Podman container, PortLens stops the container via the daemon API (`POST /containers/{id}/stop`) instead of killing the proxy PID. This safely frees the port without disrupting the Docker/Podman daemon. With `--force`, it uses the kill endpoint for immediate termination. The confirmation prompt and `--dry-run` output will show the container name and short ID. If the daemon is unreachable, the failure is reported explicitly. Use `--pid` if you genuinely need to signal the proxy process directly.
 
 ### Subcommand: `update`
 

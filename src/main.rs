@@ -272,6 +272,7 @@ fn print_help() {
     println!();
     println!("Subcommand 'kill' options (exactly one of --port or --pid is required):");
     println!("  -p, --port <PORT>    Kill every process using this local port");
+    println!("                       (stops containers via daemon API, not proxy PID)");
     println!("      --pid <PID>      Kill the given PID");
     println!("  -f, --force          Forceful termination (SIGKILL on Unix)");
     println!("  -y, --yes            Skip interactive confirmation");
