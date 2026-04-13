@@ -58,6 +58,15 @@ enum Command {
     },
 }
 
+impl Command {
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::Update { .. } => "update",
+            Self::Kill { .. } => "kill",
+        }
+    }
+}
+
 fn main() -> ExitCode {
     init_logger();
 
@@ -189,6 +198,15 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     } else {
         (args, None)
     };
+
+    if let Some(command) = command.as_ref()
+        && !main_args.is_empty()
+    {
+        bail!(
+            "top-level options cannot be used with the '{}' subcommand: {main_args:?}",
+            command.name()
+        );
+    }
 
     let mut pargs = pico_args::Arguments::from_vec(main_args);
 
@@ -396,6 +414,30 @@ mod tests {
         assert!(
             format!("{error:#}").contains("unexpected arguments for 'kill' subcommand"),
             "the earliest subcommand token should win"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_top_level_flags_before_kill_subcommand() {
+        let error = parse_cli(args(&["--json", "kill", "--pid", "1234"]))
+            .expect_err("top-level flags must not be silently ignored for kill");
+
+        assert!(
+            format!("{error:#}")
+                .contains("top-level options cannot be used with the 'kill' subcommand"),
+            "kill should reject stray top-level flags before the subcommand"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_top_level_flags_before_update_subcommand() {
+        let error = parse_cli(args(&["--port", "3000", "update"]))
+            .expect_err("top-level flags must not be silently ignored for update");
+
+        assert!(
+            format!("{error:#}")
+                .contains("top-level options cannot be used with the 'update' subcommand"),
+            "update should reject stray top-level flags before the subcommand"
         );
     }
 }
