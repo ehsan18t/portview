@@ -11,6 +11,20 @@
 //! - `resolve` — Container and project-root resolution with caching.
 //! - `tcp_state` — OS-specific TCP connection state polling.
 //! - `user` — User identity resolution and privilege detection.
+//!
+//! ## Future parallelization (crate extraction)
+//!
+//! The per-listener enrichment loop in `collect_with_options` is currently
+//! sequential. When this module is extracted into a standalone crate, the
+//! `build_entry` fan-out is a natural parallelization point: each listener
+//! is enriched independently except for three shared caches
+//! (`project_cache`, `process_names`, `UserResolver`).
+//!
+//! A deps-free approach using only `std::sync` primitives is sufficient:
+//! wrap each cache in `Arc<Mutex<_>>` (or `Arc<RwLock<_>>` for the read-heavy
+//! project cache) and dispatch work across a `std::thread::scope` pool. Avoid
+//! pulling in `rayon`/`dashmap` — the crate aims to stay dependency-light, and
+//! the expected listener count (< a few hundred) does not justify the cost.
 
 mod dedup;
 mod entry;
