@@ -135,9 +135,7 @@ fn render_narrow_tips_panel(
     terminal_width: Option<usize>,
     style: BorderStyle,
 ) -> String {
-    let inner_width = tip_inner_width(terminal_width)
-        .max(display_width(title))
-        .max(24);
+    let inner_width = tip_inner_width(terminal_width);
     let full_width = inner_width + 2;
     let mut lines = vec![render_titled_top_border(title, full_width, style)];
 
@@ -193,7 +191,11 @@ fn fit_action_widths(natural_widths: &[usize; 3], terminal_width: Option<usize>)
 
 fn render_titled_top_border(title: &str, total_width: usize, style: BorderStyle) -> String {
     let inner_width = total_width.saturating_sub(2);
-    let title = format!(" {} ", truncate_to_width(title, inner_width));
+    let title = if inner_width >= 2 {
+        format!(" {} ", truncate_to_width(title, inner_width - 2))
+    } else {
+        truncate_to_width(title, inner_width)
+    };
     let fill = style
         .horizontal
         .to_string()
@@ -272,7 +274,7 @@ mod tests {
     #[test]
     fn write_tips_renders_shortcut_box() {
         let mut buffer = Vec::new();
-        write_tips(&mut buffer).expect("write_tips should succeed");
+        write_tips_with_width(&mut buffer, Some(80)).expect("write_tips_with_width should succeed");
         let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
 
         assert!(
@@ -325,6 +327,25 @@ mod tests {
         assert!(
             output.contains("focus a single service"),
             "narrow tip layout should still include the action description"
+        );
+    }
+
+    #[test]
+    fn write_tips_very_narrow_layout_stays_within_width() {
+        let mut buffer = Vec::new();
+
+        write_tips_with_width(&mut buffer, Some(20)).expect("write_tips_with_width should succeed");
+
+        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        for line in output.lines().filter(|line| !line.is_empty()) {
+            assert!(
+                display_width(line) <= 20,
+                "very narrow tip panel line should fit the requested width: {line}"
+            );
+        }
+        assert!(
+            output.contains("Quick"),
+            "very narrow tip layout should still show a truncated title"
         );
     }
 }
