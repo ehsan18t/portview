@@ -343,6 +343,124 @@ fn connect_tcp_stream(addr: &str) -> Option<std::net::TcpStream> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// Container stop / kill transport
+// ---------------------------------------------------------------------------
+
+/// Timeout for container stop operations.
+///
+/// Longer than the query timeout since Docker's graceful stop waits up
+/// to 10 seconds by default before sending SIGKILL.
+pub(super) const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Send a POST request to stop or kill a container via a Unix socket.
+#[cfg(unix)]
+pub(super) fn stop_via_unix_socket(path: &std::path::Path, endpoint: &str) -> Option<u16> {
+    use std::os::unix::net::UnixStream;
+
+    let mut stream = match UnixStream::connect(path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            debug!(
+                "failed to connect to container runtime socket for stop: socket={} error={error}",
+                path.display()
+            );
+            return None;
+        }
+    };
+    drop(stream.set_read_timeout(Some(STOP_TIMEOUT)));
+    drop(stream.set_write_timeout(Some(STOP_TIMEOUT)));
+    http::send_http_post_status(&mut stream, endpoint)
+}
+
+/// Send a POST request to stop or kill a container via a Windows named pipe.
+#[cfg(windows)]
+pub(super) fn stop_via_named_pipe(path: &str, endpoint: &str) -> Option<u16> {
+    use std::fs::OpenOptions;
+
+    let deadline = std::time::Instant::now() + STOP_TIMEOUT;
+
+    loop {
+        let mut stream = match OpenOptions::new().read(true).write(true).open(path) {
+            Ok(stream) => stream,
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                wait_named_pipe(path, deadline)?;
+                continue;
+            }
+            Err(error) => {
+                debug!(
+                    "failed to open container runtime named pipe for stop: \
+                     pipe={path} error={error}"
+                );
+                return None;
+            }
+        };
+
+        return send_http_post_status_windows(&mut stream, endpoint, deadline);
+    }
+}
+
+/// Windows named-pipe polled-IO loop for POST requests that return only a
+/// status code (no body needed).
+#[cfg(windows)]
+fn send_http_post_status_windows(
+    stream: &mut std::fs::File,
+    endpoint: &str,
+    deadline: std::time::Instant,
+) -> Option<u16> {
+    use std::io::{Read as _, Write as _};
+
+    stream
+        .write_all(&http::format_post_request(endpoint))
+        .ok()?;
+
+    let mut response = Vec::with_capacity(1024);
+    let mut chunk = [0_u8; 1024];
+
+    loop {
+        if let Some(hdr) = http::parse_response_headers(&response) {
+            return Some(hdr.status_code);
+        }
+
+        let available = match peek_available_bytes(stream) {
+            Some(available) => available,
+            None if last_os_error_is(ERROR_BROKEN_PIPE) => {
+                return http::parse_response_headers(&response).map(|hdr| hdr.status_code);
+            }
+            None => return None,
+        };
+
+        if available == 0 {
+            if std::time::Instant::now() >= deadline {
+                return http::parse_response_headers(&response).map(|hdr| hdr.status_code);
+            }
+            std::thread::sleep(PIPE_POLL_INTERVAL);
+            continue;
+        }
+
+        let max_chunk = u32::try_from(chunk.len()).ok()?;
+        let read_len = usize::try_from(available.min(max_chunk)).ok()?;
+        match stream.read(&mut chunk[..read_len]) {
+            Ok(0) => {
+                return http::parse_response_headers(&response).map(|hdr| hdr.status_code);
+            }
+            Ok(read) => response.extend_from_slice(&chunk[..read]),
+            Err(error) if error.raw_os_error() == Some(ERROR_BROKEN_PIPE) => {
+                return http::parse_response_headers(&response).map(|hdr| hdr.status_code);
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Send a POST request to stop or kill a container via TCP.
+pub(super) fn stop_via_tcp(addr: &str, endpoint: &str) -> Option<u16> {
+    let mut stream = connect_tcp_stream(addr)?;
+    drop(stream.set_read_timeout(Some(STOP_TIMEOUT)));
+    drop(stream.set_write_timeout(Some(STOP_TIMEOUT)));
+    http::send_http_post_status(&mut stream, endpoint)
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]

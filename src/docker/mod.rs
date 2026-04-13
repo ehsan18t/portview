@@ -115,6 +115,113 @@ pub fn await_detection(handle: DetectionHandle) -> ContainerPortMap {
     }
 }
 
+// ── Container stop / kill ────────────────────────────────────────────
+
+/// Result of attempting to stop or kill a container via the daemon API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// Container was successfully stopped (HTTP 204).
+    Stopped,
+    /// Container was already stopped (HTTP 304 for stop, 409 for kill).
+    AlreadyStopped,
+    /// Container was not found (HTTP 404).
+    NotFound,
+    /// The daemon could not be reached or returned an unexpected status.
+    Failed,
+}
+
+/// Stop or kill a running container via the Docker/Podman daemon API.
+///
+/// When `force` is false, sends `POST /containers/{id}/stop` (graceful
+/// SIGTERM with a 10-second timeout before SIGKILL). When `force` is
+/// true, sends `POST /containers/{id}/kill` (immediate SIGKILL).
+///
+/// Tries all known transports (TCP, Unix sockets, Windows named pipes)
+/// and returns the outcome from the first transport that connects.
+#[must_use]
+pub fn stop_container(id: &str, force: bool) -> StopOutcome {
+    let endpoint = if force {
+        format!("/containers/{id}/kill")
+    } else {
+        format!("/containers/{id}/stop")
+    };
+    debug!(
+        "attempting container stop: id={} force={force} endpoint={endpoint}",
+        &id[..id.len().min(12)]
+    );
+
+    send_stop_request(&endpoint).map_or_else(
+        || {
+            debug!("no transport could reach container runtime daemon for stop");
+            StopOutcome::Failed
+        },
+        |status_code| interpret_stop_status(status_code, force),
+    )
+}
+
+/// Map an HTTP status code from the stop/kill endpoint to `StopOutcome`.
+fn interpret_stop_status(status_code: u16, force: bool) -> StopOutcome {
+    match status_code {
+        204 => StopOutcome::Stopped,
+        // POST /containers/{id}/stop returns 304 when already stopped.
+        304 => StopOutcome::AlreadyStopped,
+        // POST /containers/{id}/kill returns 409 when container is not running.
+        409 if force => StopOutcome::AlreadyStopped,
+        404 => StopOutcome::NotFound,
+        _ => {
+            debug!("unexpected status code from container stop endpoint: {status_code}");
+            StopOutcome::Failed
+        }
+    }
+}
+
+/// Try each known transport until one successfully sends the POST request.
+fn send_stop_request(endpoint: &str) -> Option<u16> {
+    // TCP via DOCKER_HOST takes precedence (both platforms).
+    if let Some(addr) = ipc::docker_host_tcp_addr()
+        && let Some(code) = ipc::stop_via_tcp(&addr, endpoint)
+    {
+        return Some(code);
+    }
+
+    send_stop_request_platform(endpoint)
+}
+
+#[cfg(unix)]
+fn send_stop_request_platform(endpoint: &str) -> Option<u16> {
+    use std::path::Path;
+
+    // Honour DOCKER_HOST unix:// if set.
+    if let Some(path) = ipc::docker_host_unix_path()
+        && let Some(code) = ipc::stop_via_unix_socket(Path::new(&path), endpoint)
+    {
+        return Some(code);
+    }
+
+    // Safety: getuid() is a simple syscall with no preconditions.
+    let uid = unsafe { libc::getuid() };
+    for path in ipc::unix_socket_paths(uid, crate::project::home_dir()) {
+        if let Some(code) = ipc::stop_via_unix_socket(Path::new(&path), endpoint) {
+            return Some(code);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn send_stop_request_platform(endpoint: &str) -> Option<u16> {
+    // Honour DOCKER_HOST npipe:// if set.
+    if let Some(path) = ipc::docker_host_npipe_path()
+        && let Some(code) = ipc::stop_via_named_pipe(&path, endpoint)
+    {
+        return Some(code);
+    }
+
+    DEFAULT_PIPE_PATHS
+        .iter()
+        .find_map(|path| ipc::stop_via_named_pipe(path, endpoint))
+}
+
 // ── Platform-specific daemon queries ─────────────────────────────────
 
 /// If `DOCKER_HOST` is set to a `tcp://` URL, query it and return the map.
