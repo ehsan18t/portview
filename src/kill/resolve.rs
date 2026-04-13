@@ -8,11 +8,14 @@
 //! a [`ContainerTarget`] instead of a process target so the kill flow can
 //! stop the container via the daemon API rather than killing the proxy PID.
 
-use anyhow::Result;
+use std::net::SocketAddr;
+
+use anyhow::{Result, bail};
 use log::debug;
 
 use crate::collector::{self, CollectOptions};
-use crate::docker::{self, ContainerPortMap};
+use crate::docker::{self, ContainerPortMap, PublishedContainerMatch};
+use crate::types::{PortEntry, Protocol, State};
 
 /// A PID/process-name pair for one target of a kill request.
 #[derive(Debug, Clone)]
@@ -66,9 +69,13 @@ pub fn targets_for_port(port: u16) -> Result<Vec<ResolvedTarget>> {
     let mut seen_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut seen_containers: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut targets = Vec::new();
+    #[cfg(target_os = "linux")]
+    let mut podman_rootless_resolver = docker::RootlessPodmanResolver::default();
+    #[cfg(target_os = "linux")]
+    let home = crate::project::home_dir();
 
     for entry in entries {
-        if entry.port != port {
+        if !matches_port_target(&entry, port) {
             continue;
         }
         // Skip duplicate PIDs (same process on IPv4 + IPv6).
@@ -80,9 +87,16 @@ pub fn targets_for_port(port: u16) -> Result<Vec<ResolvedTarget>> {
 
         // When the process is a known Docker proxy and we have container
         // info for this port, prefer stopping the container via API.
-        if collector::is_docker_proxy_process(process_name)
-            && let Some(ct) = container_target_for_port(&container_map, port, &entry)
-        {
+        if collector::is_docker_proxy_process(process_name) {
+            let ct = container_target_for_entry(
+                &container_map,
+                &entry,
+                #[cfg(target_os = "linux")]
+                &mut podman_rootless_resolver,
+                #[cfg(target_os = "linux")]
+                home.as_deref(),
+            )?;
+
             // Dedup by container to avoid sending stop twice when the
             // proxy listens on both IPv4 and IPv6 with different PIDs.
             if seen_containers.insert(ct.container_id.clone()) {
@@ -103,29 +117,64 @@ pub fn targets_for_port(port: u16) -> Result<Vec<ResolvedTarget>> {
     Ok(targets)
 }
 
-/// Try to find a container mapping for the given port and build a target.
-fn container_target_for_port(
+fn matches_port_target(entry: &PortEntry, port: u16) -> bool {
+    entry.port == port && (entry.proto == Protocol::Udp || entry.state == State::Listen)
+}
+
+/// Resolve a proxy/helper entry to a unique container target.
+fn container_target_for_entry(
     map: &ContainerPortMap,
-    port: u16,
     entry: &crate::types::PortEntry,
-) -> Option<ContainerTarget> {
-    // Find any container that publishes this port.
-    let info = map
-        .iter()
-        .find(|((_, p, _), _)| *p == port)
-        .map(|(_, info)| info)?;
+    #[cfg(target_os = "linux")] podman_rootless_resolver: &mut docker::RootlessPodmanResolver,
+    #[cfg(target_os = "linux")] home: Option<&std::path::Path>,
+) -> Result<ContainerTarget> {
+    let socket = SocketAddr::new(entry.local_addr, entry.port);
+    let api_match = docker::lookup_published_container(map, socket, entry.proto, true);
+
+    let info = match api_match {
+        PublishedContainerMatch::Match(info) => Some(info.clone()),
+        PublishedContainerMatch::Ambiguous => {
+            bail!(
+                "refusing to stop proxy pid {} ({}) on port {} because multiple containers publish the same port/protocol; use 'kill --pid' to target the proxy explicitly",
+                entry.pid,
+                entry.process,
+                entry.port
+            );
+        }
+        PublishedContainerMatch::NotFound => None,
+    };
+
+    #[cfg(target_os = "linux")]
+    let info = info.or_else(|| {
+        docker::lookup_rootless_podman_container(
+            entry.pid,
+            entry.process.as_ref(),
+            podman_rootless_resolver,
+            home,
+        )
+    });
+
+    let Some(info) = info else {
+        bail!(
+            "refusing to kill proxy pid {} ({}) on port {} because the container could not be resolved; ensure the container runtime daemon is reachable or use 'kill --pid' to target the proxy explicitly",
+            entry.pid,
+            entry.process,
+            entry.port
+        );
+    };
 
     // Use the container ID if available, otherwise fall back to the name.
     let api_id = if info.id.is_empty() {
         info.name.clone()
     } else {
-        info.id.clone()
+        info.id
     };
+    let container_name = info.name;
 
-    Some(ContainerTarget {
+    Ok(ContainerTarget {
         container_id: api_id,
-        container_name: info.name.clone(),
-        port,
+        container_name,
+        port: entry.port,
         proxy_pid: entry.pid,
         proxy_process: entry.process.as_ref().to_owned(),
     })
@@ -135,7 +184,7 @@ fn container_target_for_port(
 ///
 /// Returns a synthetic target with "-" process name when the PID is not
 /// currently enumerable (the kill path still treats that as `AlreadyGone` later).
-pub fn target_for_pid(pid: u32) -> Target {
+pub fn target_for_pid(pid: u32) -> Option<Target> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
     let mut sys = System::new();
@@ -145,9 +194,124 @@ pub fn target_for_pid(pid: u32) -> Target {
         false,
         ProcessRefreshKind::nothing(),
     );
-    let process = sys.process(sys_pid).map_or_else(
-        || "-".to_owned(),
-        |p| p.name().to_string_lossy().into_owned(),
-    );
-    Target { pid, process }
+
+    let process = sys.process(sys_pid)?;
+    let process_name = process.name().to_string_lossy();
+    let process = if process_name.is_empty() {
+        "-".to_owned()
+    } else {
+        process_name.into_owned()
+    };
+
+    Some(Target { pid, process })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use super::*;
+
+    fn make_entry(port: u16, proto: Protocol, state: State, process: &str) -> PortEntry {
+        PortEntry {
+            port,
+            local_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            proto,
+            state,
+            pid: 4242,
+            process: process.into(),
+            user: "user".into(),
+            project: None,
+            app: None,
+            uptime_secs: None,
+        }
+    }
+
+    #[test]
+    fn matches_port_target_requires_tcp_listen_state() {
+        assert!(matches_port_target(
+            &make_entry(8080, Protocol::Tcp, State::Listen, "node"),
+            8080,
+        ));
+        assert!(matches_port_target(
+            &make_entry(53, Protocol::Udp, State::NotApplicable, "dnsmasq"),
+            53,
+        ));
+        assert!(
+            !matches_port_target(
+                &make_entry(8080, Protocol::Tcp, State::Established, "curl"),
+                8080,
+            ),
+            "port-based kill should not target non-listening TCP sockets"
+        );
+    }
+
+    #[test]
+    fn container_target_for_entry_refuses_unresolved_proxy() {
+        let entry = make_entry(5432, Protocol::Tcp, State::Listen, "docker-proxy");
+        let error = container_target_for_entry(
+            &ContainerPortMap::default(),
+            &entry,
+            #[cfg(target_os = "linux")]
+            &mut docker::RootlessPodmanResolver::default(),
+            #[cfg(target_os = "linux")]
+            None,
+        )
+        .expect_err("unresolved proxy ports must not fall back to killing the proxy pid");
+
+        assert!(
+            format!("{error:#}").contains("refusing to kill proxy pid"),
+            "port-based kill should refuse unresolved container proxies"
+        );
+    }
+
+    #[test]
+    fn container_target_for_entry_refuses_ambiguous_proxy_mappings() {
+        let mut entry = make_entry(8080, Protocol::Tcp, State::Listen, "docker-proxy");
+        entry.local_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+        let mut map = ContainerPortMap::new();
+        map.insert(
+            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
+            docker::ContainerInfo {
+                id: "api-a".to_string(),
+                name: "api-a".to_string(),
+                image: "node:22".to_string(),
+            },
+        );
+        map.insert(
+            (
+                Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+                8080,
+                Protocol::Tcp,
+            ),
+            docker::ContainerInfo {
+                id: "api-b".to_string(),
+                name: "api-b".to_string(),
+                image: "node:22".to_string(),
+            },
+        );
+
+        let error = container_target_for_entry(
+            &map,
+            &entry,
+            #[cfg(target_os = "linux")]
+            &mut docker::RootlessPodmanResolver::default(),
+            #[cfg(target_os = "linux")]
+            None,
+        )
+        .expect_err("ambiguous proxy mappings must not pick an arbitrary container");
+
+        assert!(
+            format!("{error:#}").contains("multiple containers publish the same port/protocol"),
+            "ambiguous proxy matches should be rejected explicitly"
+        );
+    }
+
+    #[test]
+    fn target_for_pid_returns_none_when_process_is_missing() {
+        assert!(
+            target_for_pid(u32::MAX).is_none(),
+            "an impossible pid should not resolve to a synthetic kill target"
+        );
+    }
 }

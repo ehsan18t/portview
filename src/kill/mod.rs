@@ -18,7 +18,7 @@ use anyhow::{Result, bail};
 
 use self::platform::{kill_pid, pid_exists};
 use self::report::KillReportEntry;
-use self::resolve::{ResolvedTarget, target_for_pid, targets_for_port};
+use self::resolve::{ResolvedTarget, Target, target_for_pid, targets_for_port};
 
 /// Target selector for a kill invocation.
 #[derive(Debug, Clone, Copy)]
@@ -116,11 +116,22 @@ fn resolve_targets(opts: &KillOptions) -> Result<Vec<ResolvedTarget>> {
     // exit code (2); callers here can rely on `port >= 1`.
     match opts.target {
         KillTarget::Port(port) => targets_for_port(port),
-        KillTarget::Pid(pid) => Ok((preserve_pid_target(pid) || pid_exists(pid))
-            .then(|| ResolvedTarget::Process(target_for_pid(pid)))
+        KillTarget::Pid(pid) => Ok(resolve_pid_target(pid)
             .into_iter()
             .collect()),
     }
+}
+
+fn resolve_pid_target(pid: u32) -> Option<ResolvedTarget> {
+    if preserve_pid_target(pid) || pid_exists(pid) {
+        let target = target_for_pid(pid).unwrap_or(Target {
+            pid,
+            process: "-".to_owned(),
+        });
+        return Some(ResolvedTarget::Process(target));
+    }
+
+    None
 }
 
 fn preserve_pid_target(pid: u32) -> bool {

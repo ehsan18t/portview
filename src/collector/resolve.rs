@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use crate::docker::{self, ContainerPortMap};
+use crate::docker::{self, ContainerPortMap, PublishedContainerMatch};
 use crate::project;
 use crate::types::Protocol;
 
@@ -63,48 +63,13 @@ fn lookup_container<'a>(
     process_name: &str,
     exe_name: Option<&str>,
 ) -> Option<&'a docker::ContainerInfo> {
-    // Exact match: the listener's local address matches the container's published IP.
-    if let Some(container) = container_map.get(&(Some(socket.ip()), socket.port(), proto)) {
-        return Some(container);
+    let allow_proxy_fallback = dedup::is_docker_proxy_process(process_name)
+        || exe_name.is_some_and(dedup::is_docker_proxy_process);
+
+    match docker::lookup_published_container(container_map, socket, proto, allow_proxy_fallback) {
+        PublishedContainerMatch::Match(container) => Some(container),
+        PublishedContainerMatch::NotFound | PublishedContainerMatch::Ambiguous => None,
     }
-
-    // Wildcard match: the container is mapped to a specific host IP, but the
-    // OS-level listener reports 0.0.0.0 (or [::]) because the process itself
-    // binds on all interfaces.
-    if let Some(container) = container_map.get(&(None, socket.port(), proto)) {
-        return Some(container);
-    }
-
-    // Proxy fallback: Docker Desktop Windows publishes ports via proxy
-    // processes (wslrelay.exe, com.docker.backend.exe) that bind on a
-    // different address than the container. When the port matches AND the
-    // process is a known Docker proxy, accept the fallback only when every
-    // matching port+proto mapping resolves to the same container. If distinct
-    // containers share the same public port on different host IPs, refusing to
-    // enrich is safer than attributing the row to the wrong service.
-    if dedup::is_docker_proxy_process(process_name)
-        || exe_name.is_some_and(dedup::is_docker_proxy_process)
-    {
-        return unique_container_for_proxy(container_map, socket.port(), proto);
-    }
-
-    None
-}
-
-fn unique_container_for_proxy(
-    container_map: &ContainerPortMap,
-    port: u16,
-    proto: Protocol,
-) -> Option<&docker::ContainerInfo> {
-    let mut matches = container_map
-        .iter()
-        .filter(|((_, candidate_port, candidate_proto), _)| {
-            *candidate_port == port && *candidate_proto == proto
-        })
-        .map(|(_, container)| container);
-
-    let first = matches.next()?;
-    matches.all(|candidate| candidate == first).then_some(first)
 }
 
 #[cfg(target_os = "linux")]
