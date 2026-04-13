@@ -1,5 +1,4 @@
 <div align="center">
-    <br>
   <img src="assets/icon.png" height="96" alt="PortLens" />
   <h1>PortLens</h1>
   <p><strong>A cross-platform CLI tool that lists open network ports and their associated processes</strong></p>
@@ -16,7 +15,7 @@
   </a>
   <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-informational" alt="Platform" />
   <img src="https://img.shields.io/badge/License-MIT-success" alt="License" />
-  <br><br>
+</div>
 </br>
 
 
