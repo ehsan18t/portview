@@ -158,6 +158,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         let port: Option<u16> = sub_pargs
             .opt_value_from_str(["-p", "--port"])
             .context("invalid value for '--port' (expected an integer in 1..=65535)")?;
+        validate_port_arg(port)?;
         let pid: Option<u32> = sub_pargs
             .opt_value_from_str("--pid")
             .context("invalid value for '--pid' (expected a non-negative integer)")?;
@@ -173,9 +174,6 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
             (None, None) => bail!("'kill' requires exactly one of '--port' or '--pid'"),
             (Some(_), Some(_)) => bail!("'--port' and '--pid' cannot be used together"),
             _ => {}
-        }
-        if port == Some(0) {
-            bail!("invalid value for '--port' (expected an integer in 1..=65535)");
         }
         (
             main,
@@ -199,7 +197,8 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let listen = pargs.contains(["-l", "--listen"]);
     let port: Option<u16> = pargs
         .opt_value_from_str(["-p", "--port"])
-        .context("invalid value for '--port' (expected an integer in 0..=65535)")?;
+        .context("invalid value for '--port' (expected an integer in 1..=65535)")?;
+    validate_port_arg(port)?;
     let all = pargs.contains(["-a", "--all"]);
     let full = pargs.contains(["-f", "--full"]);
     let compact = pargs.contains(["-c", "--compact"]);
@@ -233,6 +232,14 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         no_enrich,
         command,
     })
+}
+
+fn validate_port_arg(port: Option<u16>) -> Result<()> {
+    if port == Some(0) {
+        bail!("invalid value for '--port' (expected an integer in 1..=65535)");
+    }
+
+    Ok(())
 }
 
 fn print_help() {
@@ -348,4 +355,46 @@ fn run(cli: Cli) -> Result<u8> {
     }
 
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn parse_cli_rejects_global_port_zero() {
+        let error = parse_cli(args(&["--port", "0"]))
+            .expect_err("top-level --port 0 should be rejected during parsing");
+
+        assert!(
+            format!("{error:#}").contains("expected an integer in 1..=65535"),
+            "port zero should produce the standard usage error"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_kill_port_zero() {
+        let error = parse_cli(args(&["kill", "--port", "0"]))
+            .expect_err("kill --port 0 should be rejected during parsing");
+
+        assert!(
+            format!("{error:#}").contains("expected an integer in 1..=65535"),
+            "kill port zero should produce the standard usage error"
+        );
+    }
+
+    #[test]
+    fn parse_cli_uses_first_subcommand_token() {
+        let error = parse_cli(args(&["kill", "update"]))
+            .expect_err("kill update should be parsed as kill with a stray argument");
+
+        assert!(
+            format!("{error:#}").contains("unexpected arguments for 'kill' subcommand"),
+            "the earliest subcommand token should win"
+        );
+    }
 }
