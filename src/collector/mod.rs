@@ -32,6 +32,8 @@ mod resolve;
 mod tcp_state;
 mod user;
 
+pub(crate) use dedup::is_docker_proxy_process;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

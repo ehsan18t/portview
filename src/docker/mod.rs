@@ -118,7 +118,7 @@ pub fn await_detection(handle: DetectionHandle) -> ContainerPortMap {
 // ── Container stop / kill ────────────────────────────────────────────
 
 /// Result of attempting to stop or kill a container via the daemon API.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopOutcome {
     /// Container was successfully stopped (HTTP 204).
     Stopped,

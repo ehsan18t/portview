@@ -29,14 +29,6 @@ pub enum KillOutcome {
     Failed,
 }
 
-impl KillOutcome {
-    /// Whether this outcome counts as overall success for exit-code purposes.
-    #[must_use]
-    pub const fn is_success(self) -> bool {
-        matches!(self, Self::Signaled | Self::AlreadyGone)
-    }
-}
-
 /// Return whether `pid` currently refers to a live process.
 #[must_use]
 pub(super) fn pid_exists(pid: u32) -> bool {

@@ -18,7 +18,7 @@ use anyhow::{Result, bail};
 
 use self::platform::{kill_pid, pid_exists};
 use self::report::KillReportEntry;
-use self::resolve::{Target, target_for_pid, targets_for_port};
+use self::resolve::{ResolvedTarget, target_for_pid, targets_for_port};
 
 /// Target selector for a kill invocation.
 #[derive(Debug, Clone, Copy)]
@@ -81,11 +81,11 @@ pub fn run(opts: KillOptions) -> Result<u8> {
     let mut report = Vec::with_capacity(targets.len());
     let mut any_failure = false;
     for t in targets {
-        let outcome = kill_pid(t.pid, opts.force);
-        if !outcome.is_success() {
+        let entry = execute_target(t, opts.force);
+        if entry.is_failure() {
             any_failure = true;
         }
-        report.push(KillReportEntry::from_outcome(t.pid, t.process, outcome));
+        report.push(entry);
     }
 
     if opts.json {
@@ -97,13 +97,27 @@ pub fn run(opts: KillOptions) -> Result<u8> {
     Ok(u8::from(any_failure))
 }
 
-fn resolve_targets(opts: &KillOptions) -> Result<Vec<Target>> {
+/// Execute a single resolved target (process kill or container stop).
+fn execute_target(target: ResolvedTarget, force: bool) -> KillReportEntry {
+    match target {
+        ResolvedTarget::Process(t) => {
+            let outcome = kill_pid(t.pid, force);
+            KillReportEntry::from_outcome(t.pid, t.process, outcome)
+        }
+        ResolvedTarget::Container(ct) => {
+            let outcome = crate::docker::stop_container(&ct.container_id, force);
+            KillReportEntry::from_container_outcome(ct, outcome)
+        }
+    }
+}
+
+fn resolve_targets(opts: &KillOptions) -> Result<Vec<ResolvedTarget>> {
     // Note: `--port 0` is rejected at CLI-parse time so it produces a usage
     // exit code (2); callers here can rely on `port >= 1`.
     match opts.target {
         KillTarget::Port(port) => targets_for_port(port),
         KillTarget::Pid(pid) => Ok((preserve_pid_target(pid) || pid_exists(pid))
-            .then(|| target_for_pid(pid))
+            .then(|| ResolvedTarget::Process(target_for_pid(pid)))
             .into_iter()
             .collect()),
     }
@@ -127,38 +141,64 @@ fn preserve_pid_target(pid: u32) -> bool {
     false
 }
 
-fn reject_protected_pids(targets: &[Target]) -> Result<()> {
+fn reject_protected_pids(targets: &[ResolvedTarget]) -> Result<()> {
     let self_pid = std::process::id();
     for t in targets {
-        if t.pid == 0 {
+        let pid = match t {
+            ResolvedTarget::Process(p) => p.pid,
+            // Container targets are stopped via the daemon API. The proxy
+            // PID is informational; we never signal it directly.
+            ResolvedTarget::Container(_) => continue,
+        };
+        if pid == 0 {
             bail!("refusing to kill pid 0 (kernel/system idle process)");
         }
-        if t.pid == self_pid {
-            bail!("refusing to kill self (pid {})", t.pid);
+        if pid == self_pid {
+            bail!("refusing to kill self (pid {pid})");
         }
         #[cfg(unix)]
-        if t.pid == 1 {
+        if pid == 1 {
             bail!("refusing to kill pid 1 (init)");
         }
         #[cfg(windows)]
-        if t.pid == 4 {
+        if pid == 4 {
             bail!("refusing to kill pid 4 (Windows System process)");
         }
     }
     Ok(())
 }
 
-fn announce_dry_run(targets: &[Target], opts: &KillOptions) -> Result<()> {
+fn announce_dry_run(targets: &[ResolvedTarget], opts: &KillOptions) -> Result<()> {
     if opts.json {
         let report = dry_run_report(targets, opts.force);
         return report::print_json(&report);
     }
 
     let mut out = std::io::stdout().lock();
+    let (n_proc, n_ctr) = count_target_kinds(targets);
     let kind = dry_run_kind(opts.force);
-    writeln!(out, "dry-run: would {kind} {} process(es):", targets.len())?;
+
+    if n_proc > 0 {
+        writeln!(out, "dry-run: would {kind} {n_proc} process(es):")?;
+    }
+    if n_ctr > 0 {
+        let verb = if opts.force { "force-stop" } else { "stop" };
+        writeln!(out, "dry-run: would {verb} {n_ctr} container(s):")?;
+    }
+
     for t in targets {
-        writeln!(out, "  pid {} ({})", t.pid, t.process)?;
+        match t {
+            ResolvedTarget::Process(p) => {
+                writeln!(out, "  pid {} ({})", p.pid, p.process)?;
+            }
+            ResolvedTarget::Container(ct) => {
+                writeln!(
+                    out,
+                    "  container '{}' [proxy pid {} ({})]",
+                    ct.container_name, ct.proxy_pid, ct.proxy_process
+                )?;
+            }
+        }
     }
     Ok(())
 }
@@ -180,19 +220,44 @@ const fn dry_run_kind(force: bool) -> &'static str {
     }
 }
 
-fn dry_run_report(targets: &[Target], force: bool) -> Vec<KillReportEntry> {
+fn dry_run_report(targets: &[ResolvedTarget], force: bool) -> Vec<KillReportEntry> {
     targets
         .iter()
-        .map(|target| KillReportEntry::from_dry_run(target.pid, target.process.clone(), force))
+        .map(|target| match target {
+            ResolvedTarget::Process(t) => {
+                KillReportEntry::from_dry_run(t.pid, t.process.clone(), force)
+            }
+            ResolvedTarget::Container(ct) => KillReportEntry::from_container_dry_run(ct, force),
+        })
         .collect()
 }
 
-fn confirm(targets: &[Target], opts: &KillOptions) -> Result<bool> {
+fn confirm(targets: &[ResolvedTarget], opts: &KillOptions) -> Result<bool> {
     let mut err = std::io::stderr().lock();
+    let (n_proc, n_ctr) = count_target_kinds(targets);
     let verb = confirmation_verb(opts.force);
-    writeln!(err, "about to {verb} {} process(es):", targets.len())?;
+
+    if n_proc > 0 {
+        writeln!(err, "about to {verb} {n_proc} process(es):")?;
+    }
+    if n_ctr > 0 {
+        let ctr_verb = if opts.force { "force-stop" } else { "stop" };
+        writeln!(err, "about to {ctr_verb} {n_ctr} container(s):")?;
+    }
+
     for t in targets {
-        writeln!(err, "  pid {} ({})", t.pid, t.process)?;
+        match t {
+            ResolvedTarget::Process(p) => {
+                writeln!(err, "  pid {} ({})", p.pid, p.process)?;
+            }
+            ResolvedTarget::Container(ct) => {
+                writeln!(
+                    err,
+                    "  container '{}' [proxy pid {} ({})]",
+                    ct.container_name, ct.proxy_pid, ct.proxy_process
+                )?;
+            }
+        }
     }
     write!(err, "proceed? [y/N] ")?;
     err.flush()?;
@@ -204,6 +269,19 @@ fn confirm(targets: &[Target], opts: &KillOptions) -> Result<bool> {
         line.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"
     ))
+}
+
+/// Count how many process and container targets are in the list.
+fn count_target_kinds(targets: &[ResolvedTarget]) -> (usize, usize) {
+    let mut n_proc = 0;
+    let mut n_ctr = 0;
+    for t in targets {
+        match t {
+            ResolvedTarget::Process(_) => n_proc += 1,
+            ResolvedTarget::Container(_) => n_ctr += 1,
+        }
+    }
+    (n_proc, n_ctr)
 }
 
 const fn confirmation_verb(force: bool) -> &'static str {
@@ -221,6 +299,7 @@ const fn confirmation_verb(force: bool) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use self::resolve::{ContainerTarget, Target};
     use super::*;
 
     #[test]
@@ -242,10 +321,10 @@ mod tests {
 
     #[test]
     fn dry_run_report_uses_json_status_tokens() {
-        let targets = vec![Target {
+        let targets = vec![ResolvedTarget::Process(Target {
             pid: 1234,
             process: "node".to_string(),
-        }];
+        })];
 
         let report = dry_run_report(&targets, false);
 
@@ -255,14 +334,36 @@ mod tests {
 
     #[test]
     fn dry_run_report_marks_forceful_targets() {
-        let targets = vec![Target {
+        let targets = vec![ResolvedTarget::Process(Target {
             pid: 1234,
             process: "node".to_string(),
-        }];
+        })];
 
         let report = dry_run_report(&targets, true);
 
         assert_eq!(report[0].status, "would-force-kill");
+    }
+
+    #[test]
+    fn dry_run_report_container_targets() {
+        let targets = vec![ResolvedTarget::Container(ContainerTarget {
+            container_id: "abc123def456".to_string(),
+            container_name: "postgres".to_string(),
+            port: 5432,
+            proxy_pid: 1234,
+            proxy_process: "docker-proxy".to_string(),
+        })];
+
+        let report = dry_run_report(&targets, false);
+        assert_eq!(report[0].status, "would-stop-container");
+        assert_eq!(
+            report[0].container_name.as_deref(),
+            Some("postgres"),
+            "container name should be preserved in dry-run report"
+        );
+
+        let report_force = dry_run_report(&targets, true);
+        assert_eq!(report_force[0].status, "would-force-stop-container");
     }
 
     #[test]
@@ -293,5 +394,29 @@ mod tests {
             assert_eq!(confirmation_verb(false), "kill");
             assert_eq!(confirmation_verb(true), "forcefully kill");
         }
+    }
+
+    #[test]
+    fn count_target_kinds_classifies_correctly() {
+        let targets = vec![
+            ResolvedTarget::Process(Target {
+                pid: 1,
+                process: "node".to_string(),
+            }),
+            ResolvedTarget::Container(ContainerTarget {
+                container_id: "abc".to_string(),
+                container_name: "pg".to_string(),
+                port: 5432,
+                proxy_pid: 2,
+                proxy_process: "docker-proxy".to_string(),
+            }),
+            ResolvedTarget::Process(Target {
+                pid: 3,
+                process: "python".to_string(),
+            }),
+        ];
+        let (n_proc, n_ctr) = count_target_kinds(&targets);
+        assert_eq!(n_proc, 2, "should count 2 process targets");
+        assert_eq!(n_ctr, 1, "should count 1 container target");
     }
 }
