@@ -17,7 +17,7 @@ use sysinfo::Users;
 ///
 /// Values are `Arc<str>` so every `PortEntry` owned by the same user
 /// shares one heap allocation; cache clones are refcount bumps.
-#[derive(Default)]
+#[cfg_attr(not(windows), derive(Default))]
 pub(super) struct UserResolver {
     #[cfg(unix)]
     pub names_by_uid: HashMap<libc::uid_t, Arc<str>>,
@@ -25,6 +25,20 @@ pub(super) struct UserResolver {
     pub names_by_sid: HashMap<String, Arc<str>>,
     #[cfg(windows)]
     users: Users,
+}
+
+#[cfg(windows)]
+impl Default for UserResolver {
+    fn default() -> Self {
+        Self {
+            #[cfg(unix)]
+            names_by_uid: HashMap::new(),
+            #[cfg(windows)]
+            names_by_sid: HashMap::new(),
+            #[cfg(windows)]
+            users: Users::new_with_refreshed_list(),
+        }
+    }
 }
 
 #[inline]
