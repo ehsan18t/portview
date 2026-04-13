@@ -163,7 +163,7 @@ cargo install portlens
 Terminate processes by port or PID. Exactly one of `--port` or `--pid` must be provided.
 
 ```bash
-portlens kill --port 3000          # Kill every process listening on :3000 (graceful on Unix)
+portlens kill --port 3000          # Kill every process using local port :3000 (graceful on Unix)
 portlens kill --pid 12345          # Kill a single PID
 portlens kill --port 3000 --force  # SIGKILL on Unix (Windows is always forceful)
 portlens kill --port 3000 --yes    # Skip the confirmation prompt
@@ -174,7 +174,7 @@ portlens kill --pid 12345 --json
 
 | Flag           | Short | Description                                                                 |
 | -------------- | ----- | --------------------------------------------------------------------------- |
-| `--port <num>` | `-p`  | Kill every process listening on this port (dedups IPv4/IPv6 and workers)    |
+| `--port <num>` | `-p`  | Kill every process using this local port (dedups IPv4/IPv6 and workers)     |
 | `--pid <num>`  |       | Kill the specified PID                                                      |
 | `--force`      | `-f`  | Forceful termination (SIGKILL on Unix; no-op on Windows — already forceful) |
 | `--yes`        | `-y`  | Skip interactive confirmation                                               |

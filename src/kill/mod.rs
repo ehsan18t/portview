@@ -23,7 +23,7 @@ use self::resolve::{Target, target_for_pid, targets_for_port};
 /// Target selector for a kill invocation.
 #[derive(Debug, Clone, Copy)]
 pub enum KillTarget {
-    /// Kill every process listening on this port.
+    /// Kill every process using this local port.
     Port(u16),
     /// Kill a single PID directly.
     Pid(u32),
@@ -59,7 +59,7 @@ pub fn run(opts: KillOptions) -> Result<u8> {
 
     if targets.is_empty() {
         let msg = match opts.target {
-            KillTarget::Port(p) => format!("no process listening on port {p}"),
+            KillTarget::Port(p) => format!("no process is using local port {p}"),
             KillTarget::Pid(pid) => format!("no process with pid {pid}"),
         };
         eprintln!("{msg}");

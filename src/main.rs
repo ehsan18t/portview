@@ -43,7 +43,7 @@ enum Command {
     },
     /// Terminate a process by port or PID.
     Kill {
-        /// Target port: kill every process listening on this port.
+        /// Target port: kill every process using this local port.
         port: Option<u16>,
         /// Target PID: kill this specific process.
         pid: Option<u32>,
@@ -271,7 +271,7 @@ fn print_help() {
     println!("      --check          Only check for a new version; do not install");
     println!();
     println!("Subcommand 'kill' options (exactly one of --port or --pid is required):");
-    println!("  -p, --port <PORT>    Kill every process listening on this port");
+    println!("  -p, --port <PORT>    Kill every process using this local port");
     println!("      --pid <PID>      Kill the given PID");
     println!("  -f, --force          Forceful termination (SIGKILL on Unix)");
     println!("  -y, --yes            Skip interactive confirmation");

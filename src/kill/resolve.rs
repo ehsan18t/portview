@@ -1,4 +1,4 @@
-//! Resolve a port number to the set of unique PIDs listening on it.
+//! Resolve a local port number to the set of unique PIDs using it.
 //!
 //! Reuses the socket collector so every platform-specific detail (IPv4/IPv6
 //! duplication, `SO_REUSEPORT` workers, Docker userland-proxy collapsing) is
@@ -17,10 +17,14 @@ pub struct Target {
     pub process: String,
 }
 
-/// Enumerate unique PIDs owning sockets on `port`.
+/// Enumerate unique PIDs owning local sockets on `port`.
 ///
 /// Deduplicates on PID: a single process bound to both IPv4 and IPv6, or to
 /// multiple sockets on the same port, produces exactly one `Target`.
+///
+/// This intentionally matches any process using the local port, not only TCP
+/// listeners, so "what is blocking this port?" works for UDP and other bound
+/// local sockets too.
 pub fn targets_for_port(port: u16) -> Result<Vec<Target>> {
     let entries = collector::collect_with_options(&CollectOptions {
         deep_enrichment: false,
