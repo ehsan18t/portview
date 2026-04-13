@@ -98,13 +98,10 @@ pub fn run(opts: KillOptions) -> Result<u8> {
 }
 
 fn resolve_targets(opts: &KillOptions) -> Result<Vec<Target>> {
+    // Note: `--port 0` is rejected at CLI-parse time so it produces a usage
+    // exit code (2); callers here can rely on `port >= 1`.
     match opts.target {
-        KillTarget::Port(port) => {
-            if port == 0 {
-                bail!("port must be in 1..=65535");
-            }
-            targets_for_port(port)
-        }
+        KillTarget::Port(port) => targets_for_port(port),
         KillTarget::Pid(pid) => Ok(vec![target_for_pid(pid)]),
     }
 }
