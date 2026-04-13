@@ -37,6 +37,33 @@ impl KillOutcome {
     }
 }
 
+/// Return whether `pid` currently refers to a live process.
+#[must_use]
+pub(super) fn pid_exists(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Some(pid) = unix_pid(pid) else {
+            return false;
+        };
+
+        // SAFETY: `kill(pid, 0)` never delivers a signal; it only probes
+        // whether the process exists and whether we have permission to signal it.
+        let rc = unsafe { libc::kill(pid, 0) };
+        rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
+    #[cfg(windows)]
+    {
+        windows_pid_exists(pid)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// Attempt to terminate `pid`. See module docs for platform behavior.
 #[must_use]
 pub fn kill_pid(pid: u32, force: bool) -> KillOutcome {
@@ -87,10 +114,19 @@ pub fn kill_pid(pid: u32, force: bool) -> KillOutcome {
 }
 
 #[cfg(unix)]
+fn unix_pid(pid: u32) -> Option<libc::pid_t> {
+    libc::pid_t::try_from(pid).ok()
+}
+
+#[cfg(unix)]
 fn classify_unix_failure(pid: u32) -> KillOutcome {
+    let Some(pid) = unix_pid(pid) else {
+        return KillOutcome::AlreadyGone;
+    };
+
     // SAFETY: `kill(pid, 0)` never delivers a signal; it only probes whether
     // the process exists and whether we have permission to signal it.
-    let rc = unsafe { libc::kill(pid.cast_signed(), 0) };
+    let rc = unsafe { libc::kill(pid, 0) };
     if rc == 0 {
         KillOutcome::Failed
     } else {
@@ -103,18 +139,43 @@ fn classify_unix_failure(pid: u32) -> KillOutcome {
 }
 
 #[cfg(windows)]
+fn windows_pid_exists(pid: u32) -> bool {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut c_void;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+        fn GetExitCodeProcess(process: *mut c_void, exit_code: *mut u32) -> i32;
+    }
+
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const STILL_ACTIVE: u32 = 259;
+
+    // Safety: `OpenProcess` only reads the PID and returns either a process
+    // handle or a null pointer. No borrowed Rust references cross the FFI boundary.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED);
+    }
+
+    let mut exit_code = 0_u32;
+    // Safety: `handle` came from `OpenProcess`, and `exit_code` points to valid
+    // writable memory for the duration of the call.
+    let ok = unsafe { GetExitCodeProcess(handle, &raw mut exit_code) };
+    // Safety: `handle` was successfully opened above and must be closed exactly once.
+    let _ = unsafe { CloseHandle(handle) };
+
+    ok != 0 && exit_code == STILL_ACTIVE
+}
+
+#[cfg(windows)]
 fn classify_windows_failure(pid: u32) -> KillOutcome {
-    // Re-probe: if the PID is no longer present, treat as AlreadyGone.
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
-        false,
-        ProcessRefreshKind::nothing(),
-    );
-    if sys.process(Pid::from_u32(pid)).is_none() {
-        KillOutcome::AlreadyGone
-    } else {
+    if windows_pid_exists(pid) {
         // Most common remaining cause on Windows is ERROR_ACCESS_DENIED.
         KillOutcome::PermissionDenied
+    } else {
+        KillOutcome::AlreadyGone
     }
 }

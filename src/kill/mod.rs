@@ -16,7 +16,7 @@ use std::io::{BufRead, IsTerminal, Write};
 
 use anyhow::{Result, bail};
 
-use self::platform::kill_pid;
+use self::platform::{kill_pid, pid_exists};
 use self::report::KillReportEntry;
 use self::resolve::{Target, target_for_pid, targets_for_port};
 
@@ -102,8 +102,29 @@ fn resolve_targets(opts: &KillOptions) -> Result<Vec<Target>> {
     // exit code (2); callers here can rely on `port >= 1`.
     match opts.target {
         KillTarget::Port(port) => targets_for_port(port),
-        KillTarget::Pid(pid) => Ok(vec![target_for_pid(pid)]),
+        KillTarget::Pid(pid) => Ok((preserve_pid_target(pid) || pid_exists(pid))
+            .then(|| target_for_pid(pid))
+            .into_iter()
+            .collect()),
     }
+}
+
+fn preserve_pid_target(pid: u32) -> bool {
+    if pid == 0 || pid == std::process::id() {
+        return true;
+    }
+
+    #[cfg(unix)]
+    if pid == 1 {
+        return true;
+    }
+
+    #[cfg(windows)]
+    if pid == 4 {
+        return true;
+    }
+
+    false
 }
 
 fn reject_protected_pids(targets: &[Target]) -> Result<()> {
@@ -201,6 +222,23 @@ const fn confirmation_verb(force: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_returns_three_for_missing_pid() {
+        let exit_code = run(KillOptions {
+            target: KillTarget::Pid(u32::MAX),
+            force: false,
+            yes: true,
+            dry_run: true,
+            json: true,
+        })
+        .expect("missing pid should not produce a runtime error");
+
+        assert_eq!(
+            exit_code, 3,
+            "nonexistent pid selectors should report nothing to kill"
+        );
+    }
 
     #[test]
     fn dry_run_report_uses_json_status_tokens() {
