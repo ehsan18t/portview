@@ -166,7 +166,7 @@ Additional columns with `--full`:
 | ------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | ADDRESS | Local bind IP address                                                                                                              |
 | STATE   | Best-effort TCP state; shared local sockets prefer `LISTEN`, missing or ambiguous non-listener data shows `UNKNOWN`, UDP shows `-` |
-| USER    | Owning user. Shows `-` if unavailable. On Windows, this may fall back to a SID string instead of an account name                   |
+| USER    | Owning user. Shows `-` if unavailable. On Windows, portview prefers the account name and falls back to a SID string when needed    |
 
 ---
 
