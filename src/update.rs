@@ -23,7 +23,7 @@ use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Output};
 
-use anyhow::{Context, Error, Result, bail};
+use anyhow::{Context, Result, bail};
 
 /// GitHub repository owner.
 const REPO_OWNER: &str = "ehsan18t";
@@ -36,7 +36,9 @@ const REPO_NAME: &str = "portlens";
 /// the result without downloading or replacing anything.
 pub fn run(check_only: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
-    let release = check_for_update(current)?;
+    let Some(release) = check_for_update(current)? else {
+        return Ok(());
+    };
 
     let remote = &release.tag_name;
 
@@ -55,10 +57,14 @@ pub fn run(check_only: bool) -> Result<()> {
     install_update(&release, current, remote)
 }
 
-fn check_for_update(current: &str) -> Result<Release> {
+fn check_for_update(current: &str) -> Result<Option<Release>> {
     eprintln!("Current version: {current}");
     eprint!("Checking for updates... ");
-    fetch_latest_release().context("failed to check for updates")
+    let release = fetch_latest_release().context("failed to check for updates")?;
+    if release.is_none() {
+        eprintln!("no published releases found.");
+    }
+    Ok(release)
 }
 
 fn is_update_available(current: &str, remote: &str) -> bool {
@@ -131,10 +137,15 @@ fn apply_asset_update(
     ext: &str,
     install: fn(&Asset, &Path) -> Result<()>,
 ) -> Result<()> {
-    let asset_name = format!("portlens-{remote}-x86_64.{ext}");
+    let asset_name = release_asset_name(remote, ext);
     let asset = find_asset(release, &asset_name)?;
     let binary_path = current_exe_path()?;
     install(asset, &binary_path)
+}
+
+fn release_asset_name(tag_name: &str, ext: &str) -> String {
+    let version = normalized_version_tag(tag_name);
+    format!("portlens-{version}-x86_64.{ext}")
 }
 
 fn notify_package_managed(release: &Release, manager: &str) {
@@ -223,7 +234,7 @@ struct Asset {
 ///
 /// Fails with a descriptive message if curl is not installed or exits
 /// with a non-zero status.
-fn curl_get_string(url: &str) -> Result<String> {
+fn curl_get_string(url: &str) -> Result<Option<String>> {
     let output = curl_api_command(url).output().context(
         "failed to run curl. Is curl installed?\n  \
              On Windows 10+ curl ships with the OS.\n  \
@@ -231,10 +242,24 @@ fn curl_get_string(url: &str) -> Result<String> {
     )?;
 
     if !output.status.success() {
-        return Err(api_curl_error(&output, url));
+        let (code, stderr) = curl_failure_parts(&output);
+        return match classify_api_curl_failure(code, stderr.as_ref()) {
+            ApiCurlFailure::NotFound => Ok(None),
+            ApiCurlFailure::RateLimited => Err(anyhow::anyhow!(
+                "GitHub API rate limit reached. Try again later.\n  URL: {url}"
+            )),
+            ApiCurlFailure::HttpError => Err(anyhow::anyhow!(
+                "GitHub API returned an HTTP error.\n  URL: {url}\n  Detail: {stderr}"
+            )),
+            ApiCurlFailure::Transport => Err(anyhow::anyhow!(
+                "curl failed (exit code {code}).\n  URL: {url}\n  Detail: {stderr}"
+            )),
+        };
     }
 
-    String::from_utf8(output.stdout).context("GitHub API response is not valid UTF-8")
+    String::from_utf8(output.stdout)
+        .context("GitHub API response is not valid UTF-8")
+        .map(Some)
 }
 
 /// Download a file to a local path using curl.
@@ -290,29 +315,33 @@ fn curl_failure_parts(output: &Output) -> (i32, std::borrow::Cow<'_, str>) {
 }
 
 /// Build a descriptive error from a failed GitHub API curl call.
-fn api_curl_error(output: &Output, url: &str) -> Error {
-    let (code, stderr) = curl_failure_parts(output);
-
-    // curl exit code 22 = HTTP error (--fail flag); any other code is a
-    // transport-level failure (network, DNS, timeout, missing binary).
-    if code != 22 {
-        return anyhow::anyhow!(
-            "curl failed (exit code {code}).\n  URL: {url}\n  Detail: {stderr}"
-        );
-    }
-    if stderr.contains("403") || stderr.contains("429") {
-        return anyhow::anyhow!("GitHub API rate limit reached. Try again later.\n  URL: {url}");
-    }
-    if stderr.contains("404") {
-        return anyhow::anyhow!("No releases found for {REPO_OWNER}/{REPO_NAME}.\n  URL: {url}");
-    }
-    anyhow::anyhow!("GitHub API returned an HTTP error.\n  URL: {url}\n  Detail: {stderr}")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApiCurlFailure {
+    Transport,
+    RateLimited,
+    NotFound,
+    HttpError,
 }
 
-fn fetch_latest_release() -> Result<Release> {
+fn classify_api_curl_failure(code: i32, stderr: &str) -> ApiCurlFailure {
+    if code != 22 {
+        return ApiCurlFailure::Transport;
+    }
+    if stderr.contains("403") || stderr.contains("429") {
+        return ApiCurlFailure::RateLimited;
+    }
+    if stderr.contains("404") {
+        return ApiCurlFailure::NotFound;
+    }
+    ApiCurlFailure::HttpError
+}
+
+fn fetch_latest_release() -> Result<Option<Release>> {
     let url = format!("https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest");
-    let body = curl_get_string(&url)?;
-    parse_release_json(&body)
+    let Some(body) = curl_get_string(&url)? else {
+        return Ok(None);
+    };
+    parse_release_json(&body).map(Some)
 }
 
 fn parse_release_json(body: &str) -> Result<Release> {
@@ -363,11 +392,7 @@ fn parse_release_json(body: &str) -> Result<Release> {
 /// defensively.
 fn compare_versions(current: &str, remote: &str) -> Ordering {
     fn split(v: &str) -> (Vec<u64>, Option<&str>) {
-        // Strip leading `v` / `V` prefix common in GitHub release tags.
-        let v = v
-            .strip_prefix('v')
-            .or_else(|| v.strip_prefix('V'))
-            .unwrap_or(v);
+        let v = normalized_version_tag(v);
         // Strip build metadata (`+...`) first, then split core from pre-release.
         let v = v.split('+').next().unwrap_or(v);
         let (core, pre) = match v.split_once('-') {
@@ -405,6 +430,13 @@ fn compare_versions(current: &str, remote: &str) -> Ordering {
         (Some(_), None) => Ordering::Less,
         (Some(a), Some(b)) => compare_prerelease(a, b),
     }
+}
+
+fn normalized_version_tag(version: &str) -> &str {
+    version
+        .strip_prefix('v')
+        .or_else(|| version.strip_prefix('V'))
+        .unwrap_or(version)
 }
 
 /// Compare two `SemVer` pre-release strings (dot-separated identifiers).
@@ -804,6 +836,43 @@ mod tests {
             compare_versions("v1.0.0-rc1", "v1.0.0"),
             Ordering::Less,
             "v-prefixed pre-release should be less than release"
+        );
+    }
+
+    #[test]
+    fn api_curl_failure_detects_missing_releases() {
+        assert_eq!(
+            classify_api_curl_failure(22, "curl: (22) The requested URL returned error: 404"),
+            ApiCurlFailure::NotFound,
+            "404 release lookups should be treated as an empty releases state"
+        );
+    }
+
+    #[test]
+    fn api_curl_failure_detects_rate_limits() {
+        assert_eq!(
+            classify_api_curl_failure(22, "curl: (22) The requested URL returned error: 403"),
+            ApiCurlFailure::RateLimited,
+            "403 API failures should be reported as rate limiting"
+        );
+        assert_eq!(
+            classify_api_curl_failure(22, "curl: (22) The requested URL returned error: 429"),
+            ApiCurlFailure::RateLimited,
+            "429 API failures should be reported as rate limiting"
+        );
+    }
+
+    #[test]
+    fn release_asset_name_strips_v_prefix() {
+        assert_eq!(
+            release_asset_name("v0.2.0", "exe"),
+            "portlens-0.2.0-x86_64.exe",
+            "asset lookup should normalize leading v prefixes in release tags"
+        );
+        assert_eq!(
+            release_asset_name("V0.2.0", "tar.gz"),
+            "portlens-0.2.0-x86_64.tar.gz",
+            "asset lookup should normalize uppercase V prefixes in release tags"
         );
     }
 
