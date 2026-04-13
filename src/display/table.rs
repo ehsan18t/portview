@@ -363,33 +363,6 @@ fn format_uptime(secs: Option<u64>) -> String {
     "< 1m".to_string()
 }
 
-/// Truncate a process name to [`MAX_PROCESS_NAME_LEN`] characters with an
-/// ellipsis if it exceeds the limit.
-///
-/// Uses character boundaries and stops after the first 21 characters, so
-/// oversized names are not traversed twice.
-fn truncate_process_name(name: &str) -> String {
-    let mut ellipsis_index = None;
-    let mut needs_truncation = false;
-
-    for (index, (byte_index, _)) in name.char_indices().enumerate() {
-        if index == MAX_PROCESS_NAME_LEN - 1 {
-            ellipsis_index = Some(byte_index);
-        } else if index == MAX_PROCESS_NAME_LEN {
-            needs_truncation = true;
-            break;
-        }
-    }
-
-    if !needs_truncation {
-        return name.to_string();
-    }
-
-    let mut truncated = name[..ellipsis_index.unwrap_or_default()].to_string();
-    truncated.push('\u{2026}');
-    truncated
-}
-
 // ── Column metadata ─────────────────────────────────────────────────
 
 impl Column {
@@ -465,7 +438,7 @@ impl Column {
             Self::Proto => entry.proto.to_string(),
             Self::Address => entry.local_addr.to_string(),
             Self::State => entry.state.to_string(),
-            Self::Process => truncate_process_name(&entry.process),
+            Self::Process => truncate_to_width(&entry.process, MAX_PROCESS_NAME_LEN),
             Self::Pid => entry.pid.to_string(),
             Self::User => entry.user.to_string(),
             Self::Project => entry.project.as_deref().unwrap_or("-").to_string(),
@@ -608,19 +581,19 @@ mod tests {
 
     #[test]
     fn short_name_unchanged() {
-        assert_eq!(truncate_process_name("sshd"), "sshd");
+        assert_eq!(truncate_to_width("sshd", MAX_PROCESS_NAME_LEN), "sshd");
     }
 
     #[test]
     fn exact_length_unchanged() {
         let name = "a".repeat(MAX_PROCESS_NAME_LEN);
-        assert_eq!(truncate_process_name(&name), name);
+        assert_eq!(truncate_to_width(&name, MAX_PROCESS_NAME_LEN), name);
     }
 
     #[test]
     fn long_name_truncated() {
         let name = "a".repeat(MAX_PROCESS_NAME_LEN + 5);
-        let result = truncate_process_name(&name);
+        let result = truncate_to_width(&name, MAX_PROCESS_NAME_LEN);
         assert_eq!(
             result.chars().count(),
             MAX_PROCESS_NAME_LEN,
@@ -636,7 +609,7 @@ mod tests {
     fn multibyte_name_does_not_panic() {
         // CJK characters are 3 bytes each in UTF-8
         let name = "\u{4e16}\u{754c}".repeat(MAX_PROCESS_NAME_LEN);
-        let result = truncate_process_name(&name);
+        let result = truncate_to_width(&name, MAX_PROCESS_NAME_LEN);
         assert_eq!(
             result.chars().count(),
             MAX_PROCESS_NAME_LEN,
