@@ -1,9 +1,7 @@
 <div align="center">
-  <br>
-  <div style="display: flex; justify-content: center; align-items: center; gap: 12px;">
-    <img src="assets/icon.png" height="56px" alt="PortLens" />
-    <big><big><b>PortLens</b></big></big>
-  </div>
+    <br>
+  <img src="assets/icon.png" height="96" alt="PortLens" />
+  <h1>PortLens</h1>
   <p><strong>A cross-platform CLI tool that lists open network ports and their associated processes</strong></p>
   <br>
 
