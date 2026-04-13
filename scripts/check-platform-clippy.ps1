@@ -23,6 +23,21 @@ function Assert-Command {
     exit 1
 }
 
+function Ensure-RustToolchainPath {
+    if (Get-Command cargo -ErrorAction SilentlyContinue) {
+        return
+    }
+
+    $cargoBin = Join-Path $HOME ".cargo\bin"
+    $cargoExe = Join-Path $cargoBin "cargo.exe"
+
+    if (Test-Path $cargoExe) {
+        $env:PATH = "$cargoBin;$env:PATH"
+    }
+}
+
+Ensure-RustToolchainPath
+
 Assert-Command cargo
 Assert-Command rustc
 Assert-Command rustup

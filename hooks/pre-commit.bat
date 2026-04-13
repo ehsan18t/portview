@@ -10,6 +10,8 @@ echo   PortLens Pre-Commit Quality Gate
 echo ======================================
 echo.
 
+call :ensure_cargo
+
 REM Gate 1: Formatting
 echo -^> Checking formatting...
 cargo fmt --all -- --check
@@ -52,3 +54,21 @@ echo   OK Tests
 
 echo.
 echo All quality gates passed. Committing...
+exit /b 0
+
+:ensure_cargo
+where cargo >nul 2>nul
+if %ERRORLEVEL% equ 0 exit /b 0
+
+if exist "%USERPROFILE%\.cargo\bin\cargo.exe" (
+    set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+)
+
+where cargo >nul 2>nul
+if %ERRORLEVEL% equ 0 exit /b 0
+
+echo.
+echo X RUST TOOLCHAIN NOT FOUND
+echo   cargo is not available in the git hook environment.
+echo   Install Rust or add %%USERPROFILE%%\.cargo\bin to PATH, then try again.
+exit /b 1
