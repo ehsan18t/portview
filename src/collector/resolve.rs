@@ -159,18 +159,69 @@ mod tests {
     use super::*;
     use std::fs;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::path::Path;
     use tempfile::TempDir;
+
+    fn make_container(name: &str, image: &str) -> docker::ContainerInfo {
+        docker::ContainerInfo {
+            id: String::new(),
+            name: name.to_string(),
+            image: image.to_string(),
+        }
+    }
+
+    fn insert_container(
+        map: &mut ContainerPortMap,
+        address: IpAddr,
+        port: u16,
+        name: &str,
+        image: &str,
+    ) {
+        map.insert(
+            (Some(address), port, Protocol::Tcp),
+            make_container(name, image),
+        );
+    }
+
+    fn assert_container_name(container: Option<&docker::ContainerInfo>, expected_name: &str) {
+        assert_eq!(
+            container.map(|info| info.name.as_str()),
+            Some(expected_name)
+        );
+    }
+
+    fn write_marker(root: &Path, marker: &str) {
+        fs::create_dir_all(root).unwrap();
+        fs::write(root.join(marker), "").unwrap();
+    }
+
+    fn write_empty_file(path: &Path) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "").unwrap();
+    }
+
+    fn assert_cached_root(
+        cache: &HashMap<PathBuf, Option<PathBuf>>,
+        path: &Path,
+        expected_root: &Path,
+        message: &str,
+    ) {
+        assert_eq!(
+            cache.get(path).and_then(Option::as_deref),
+            Some(expected_root),
+            "{message}"
+        );
+    }
 
     #[test]
     fn container_lookup_prefers_exact_address_matches() {
         let mut map = HashMap::new();
-        map.insert(
-            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
-            docker::ContainerInfo {
-                id: String::new(),
-                name: "loopback-app".to_string(),
-                image: "node:22".to_string(),
-            },
+        insert_container(
+            &mut map,
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            8080,
+            "loopback-app",
+            "node:22",
         );
 
         let exact = lookup_container(
@@ -180,7 +231,7 @@ mod tests {
             "node",
             None,
         );
-        assert_eq!(exact.map(|info| info.name.as_str()), Some("loopback-app"));
+        assert_container_name(exact, "loopback-app");
 
         let mismatch = lookup_container(
             &map,
@@ -198,13 +249,12 @@ mod tests {
     #[test]
     fn container_lookup_uses_proxy_fallback_for_unique_port_mapping() {
         let mut map = HashMap::new();
-        map.insert(
-            (Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)), 5432, Protocol::Tcp),
-            docker::ContainerInfo {
-                id: String::new(),
-                name: "postgres".to_string(),
-                image: "postgres:16".to_string(),
-            },
+        insert_container(
+            &mut map,
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            5432,
+            "postgres",
+            "postgres:16",
         );
 
         let container = lookup_container(
@@ -214,19 +264,18 @@ mod tests {
             "wslrelay.exe",
             None,
         );
-        assert_eq!(container.map(|info| info.name.as_str()), Some("postgres"));
+        assert_container_name(container, "postgres");
     }
 
     #[test]
     fn container_lookup_uses_proxy_fallback_for_rootlessport() {
         let mut map = HashMap::new();
-        map.insert(
-            (Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)), 6379, Protocol::Tcp),
-            docker::ContainerInfo {
-                id: String::new(),
-                name: "redis".to_string(),
-                image: "redis:7-alpine".to_string(),
-            },
+        insert_container(
+            &mut map,
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            6379,
+            "redis",
+            "redis:7-alpine",
         );
 
         let container = lookup_container(
@@ -236,19 +285,18 @@ mod tests {
             "rootlessport",
             None,
         );
-        assert_eq!(container.map(|info| info.name.as_str()), Some("redis"));
+        assert_container_name(container, "redis");
     }
 
     #[test]
     fn container_lookup_uses_exe_name_for_proxy_fallback() {
         let mut map = HashMap::new();
-        map.insert(
-            (Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)), 3000, Protocol::Tcp),
-            docker::ContainerInfo {
-                id: String::new(),
-                name: "web".to_string(),
-                image: "node:22".to_string(),
-            },
+        insert_container(
+            &mut map,
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            3000,
+            "web",
+            "node:22",
         );
 
         let container = lookup_container(
@@ -258,7 +306,7 @@ mod tests {
             "truncated-helper",
             Some("wslrelay.exe"),
         );
-        assert_eq!(container.map(|info| info.name.as_str()), Some("web"));
+        assert_container_name(container, "web");
     }
 
     #[test]
@@ -301,11 +349,7 @@ mod tests {
     #[test]
     fn container_lookup_keeps_proxy_fallback_when_all_matches_agree() {
         let mut map = HashMap::new();
-        let container_info = docker::ContainerInfo {
-            id: String::new(),
-            name: "shared-api".to_string(),
-            image: "node:22".to_string(),
-        };
+        let container_info = make_container("shared-api", "node:22");
 
         map.insert(
             (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
@@ -327,13 +371,13 @@ mod tests {
             "wslrelay.exe",
             None,
         );
-        assert_eq!(container.map(|info| info.name.as_str()), Some("shared-api"));
+        assert_container_name(container, "shared-api");
     }
 
     #[test]
     fn project_root_cache_learns_visited_ancestors() {
         let root = TempDir::new().unwrap();
-        fs::write(root.path().join("Cargo.toml"), "").unwrap();
+        write_marker(root.path(), "Cargo.toml");
 
         let first = root.path().join("src").join("db");
         let second = root.path().join("src").join("utils");
@@ -344,25 +388,26 @@ mod tests {
 
         let first_result = lookup_cached_project_root(&first, &mut cache, None);
         assert_eq!(first_result.as_deref(), Some(root.path()));
-        assert_eq!(
-            cache.get(first.as_path()).and_then(Option::as_deref),
-            Some(root.path()),
-            "the original cwd should be cached"
+        assert_cached_root(
+            &cache,
+            first.as_path(),
+            root.path(),
+            "the original cwd should be cached",
         );
-        assert_eq!(
-            cache
-                .get(first.parent().unwrap())
-                .and_then(Option::as_deref),
-            Some(root.path()),
-            "visited ancestors should also be cached"
+        assert_cached_root(
+            &cache,
+            first.parent().unwrap(),
+            root.path(),
+            "visited ancestors should also be cached",
         );
 
         let second_result = lookup_cached_project_root(&second, &mut cache, None);
         assert_eq!(second_result.as_deref(), Some(root.path()));
-        assert_eq!(
-            cache.get(second.as_path()).and_then(Option::as_deref),
-            Some(root.path()),
-            "sibling directories should learn from the cached ancestor"
+        assert_cached_root(
+            &cache,
+            second.as_path(),
+            root.path(),
+            "sibling directories should learn from the cached ancestor",
         );
     }
 
@@ -376,7 +421,7 @@ mod tests {
 
         fs::create_dir_all(&inside).unwrap();
         fs::create_dir_all(&unrelated).unwrap();
-        fs::write(project_root.join("Cargo.toml"), "").unwrap();
+        write_marker(&project_root, "Cargo.toml");
 
         let mut cache = HashMap::new();
 
@@ -402,12 +447,10 @@ mod tests {
         let exe_path = exe_root.join("bin").join("service.exe");
         let cmd_path = cmd_root.join("scripts").join("launcher.py");
 
-        fs::create_dir_all(exe_path.parent().unwrap()).unwrap();
-        fs::create_dir_all(cmd_path.parent().unwrap()).unwrap();
-        fs::write(exe_root.join("Cargo.toml"), "").unwrap();
-        fs::write(cmd_root.join("pyproject.toml"), "").unwrap();
-        fs::write(&exe_path, "").unwrap();
-        fs::write(&cmd_path, "").unwrap();
+        write_marker(&exe_root, "Cargo.toml");
+        write_marker(&cmd_root, "pyproject.toml");
+        write_empty_file(&exe_path);
+        write_empty_file(&cmd_path);
 
         let cmd = vec![OsString::from(&cmd_path)];
         let mut cache = HashMap::new();

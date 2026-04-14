@@ -271,11 +271,22 @@ fn render_panel_bottom_border(inner_width: usize, style: BorderStyle) -> String 
 mod tests {
     use super::*;
 
+    fn render_tips_output(width: usize) -> String {
+        let mut buffer = Vec::new();
+        write_tips_with_width(&mut buffer, Some(width))
+            .expect("write_tips_with_width should succeed");
+        String::from_utf8(buffer).expect("output should be valid UTF-8")
+    }
+
+    fn assert_lines_fit(output: &str, width: usize, message: &str) {
+        for line in output.lines().filter(|line| !line.is_empty()) {
+            assert!(display_width(line) <= width, "{message}: {line}");
+        }
+    }
+
     #[test]
     fn write_tips_renders_shortcut_box() {
-        let mut buffer = Vec::new();
-        write_tips_with_width(&mut buffer, Some(80)).expect("write_tips_with_width should succeed");
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
+        let output = render_tips_output(80);
 
         assert!(
             output.contains("Quick Actions"),
@@ -309,17 +320,9 @@ mod tests {
 
     #[test]
     fn write_tips_narrow_layout_stays_within_width() {
-        let mut buffer = Vec::new();
+        let output = render_tips_output(48);
 
-        write_tips_with_width(&mut buffer, Some(48)).expect("write_tips_with_width should succeed");
-
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
-        for line in output.lines().filter(|line| !line.is_empty()) {
-            assert!(
-                display_width(line) <= 48,
-                "tip panel line should fit the requested width: {line}"
-            );
-        }
+        assert_lines_fit(&output, 48, "tip panel line should fit the requested width");
         assert!(
             output.contains("Filter one port"),
             "narrow tip layout should still include the action label"
@@ -332,17 +335,13 @@ mod tests {
 
     #[test]
     fn write_tips_very_narrow_layout_stays_within_width() {
-        let mut buffer = Vec::new();
+        let output = render_tips_output(20);
 
-        write_tips_with_width(&mut buffer, Some(20)).expect("write_tips_with_width should succeed");
-
-        let output = String::from_utf8(buffer).expect("output should be valid UTF-8");
-        for line in output.lines().filter(|line| !line.is_empty()) {
-            assert!(
-                display_width(line) <= 20,
-                "very narrow tip panel line should fit the requested width: {line}"
-            );
-        }
+        assert_lines_fit(
+            &output,
+            20,
+            "very narrow tip panel line should fit the requested width",
+        );
         assert!(
             output.contains("Quick"),
             "very narrow tip layout should still show a truncated title"

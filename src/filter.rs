@@ -105,6 +105,28 @@ mod tests {
         }
     }
 
+    fn port_filter_option(port: u16) -> FilterOptions {
+        FilterOptions {
+            port: Some(port),
+            ..show_all_filter()
+        }
+    }
+
+    fn make_entries(entries: &[(u16, Protocol, State)]) -> Vec<PortEntry> {
+        entries
+            .iter()
+            .copied()
+            .map(|(port, proto, state)| make_entry(port, proto, state))
+            .collect()
+    }
+
+    fn tcp_and_udp_entries() -> Vec<PortEntry> {
+        make_entries(&[
+            (80, Protocol::Tcp, State::Listen),
+            (53, Protocol::Udp, State::NotApplicable),
+        ])
+    }
+
     fn assert_single_entry(
         result: &[PortEntry],
         expected_port: u16,
@@ -123,26 +145,17 @@ mod tests {
 
     #[test]
     fn no_filters_passes_all() {
-        let entries = vec![
-            make_entry(80, Protocol::Tcp, State::Listen),
-            make_entry(53, Protocol::Udp, State::NotApplicable),
-        ];
-        let opts = show_all_filter();
-        let result = apply(entries, &opts);
+        let result = apply(tcp_and_udp_entries(), &show_all_filter());
         assert_eq!(result.len(), 2, "no filters should pass all entries");
     }
 
     #[test]
     fn tcp_only_filter() {
-        let entries = vec![
-            make_entry(80, Protocol::Tcp, State::Listen),
-            make_entry(53, Protocol::Udp, State::NotApplicable),
-        ];
         let opts = FilterOptions {
             tcp_only: true,
             ..show_all_filter()
         };
-        let result = apply(entries, &opts);
+        let result = apply(tcp_and_udp_entries(), &opts);
         assert_single_entry(
             &result,
             80,
@@ -153,15 +166,13 @@ mod tests {
 
     #[test]
     fn port_filter() {
-        let entries = vec![
-            make_entry(80, Protocol::Tcp, State::Listen),
-            make_entry(443, Protocol::Tcp, State::Listen),
-        ];
-        let opts = FilterOptions {
-            port: Some(443),
-            ..show_all_filter()
-        };
-        let result = apply(entries, &opts);
+        let result = apply(
+            make_entries(&[
+                (80, Protocol::Tcp, State::Listen),
+                (443, Protocol::Tcp, State::Listen),
+            ]),
+            &port_filter_option(443),
+        );
         assert_single_entry(
             &result,
             443,
@@ -255,15 +266,7 @@ mod tests {
 
     #[test]
     fn no_matches_returns_empty() {
-        let entries = vec![
-            make_entry(80, Protocol::Tcp, State::Listen),
-            make_entry(53, Protocol::Udp, State::NotApplicable),
-        ];
-        let opts = FilterOptions {
-            port: Some(9999),
-            ..show_all_filter()
-        };
-        let result = apply(entries, &opts);
+        let result = apply(tcp_and_udp_entries(), &port_filter_option(9999));
         assert!(result.is_empty(), "non-matching port should return empty");
     }
 
