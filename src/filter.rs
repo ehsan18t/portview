@@ -6,7 +6,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::types::{PortEntry, Protocol, State};
+use crate::types::{PortEntry, Protocol, State, strip_windows_exe_suffix};
 
 /// A port filter that matches either a single port or an inclusive range.
 ///
@@ -90,6 +90,10 @@ pub struct FilterOptions {
     pub listen_only: bool,
     /// Filter to a specific port number or range.
     pub port: Option<PortFilter>,
+    /// Filter by exact process name (case-insensitive, `.exe` stripped).
+    pub process: Option<String>,
+    /// Filter by substring match in process name (case-insensitive).
+    pub grep: Option<String>,
     /// When true, bypass the developer-relevance filter and show all ports.
     pub show_all: bool,
 }
@@ -107,15 +111,35 @@ const fn is_relevant(entry: &PortEntry) -> bool {
     entry.project.is_some() || entry.app.is_some()
 }
 
+/// Check whether a process name matches the `--process` filter exactly.
+///
+/// Strips the `.exe` suffix (if present) and compares case-insensitively.
+/// The filter value is already lowercased by the CLI normalizer.
+fn matches_process_name(process: &str, filter: &str) -> bool {
+    strip_windows_exe_suffix(process).eq_ignore_ascii_case(filter)
+}
+
+/// Check whether a process name contains the `--grep` substring.
+///
+/// Compares case-insensitively against the full process name (including
+/// any `.exe` suffix). The filter value is already lowercased by the CLI
+/// normalizer.
+fn contains_process_pattern(process: &str, pattern: &str) -> bool {
+    process
+        .to_ascii_lowercase()
+        .contains(&*pattern.to_ascii_lowercase())
+}
+
 /// Apply the given filter options to a collection of entries.
 ///
 /// Filters the input vector in place and returns the surviving entries.
-/// An explicit port query bypasses the developer-relevance filter so
-/// `--port` never hides a matching socket just because the process is not
-/// recognized.
+/// An explicit port, process, or grep query bypasses the developer-relevance
+/// filter so targeted searches never hide a matching socket just because the
+/// process is not recognized.
 #[must_use]
 pub fn apply(mut entries: Vec<PortEntry>, opts: &FilterOptions) -> Vec<PortEntry> {
-    let bypass_relevance = opts.show_all || opts.port.is_some();
+    let bypass_relevance =
+        opts.show_all || opts.port.is_some() || opts.process.is_some() || opts.grep.is_some();
 
     entries.retain(|e| {
         if opts.tcp_only && e.proto != Protocol::Tcp {
@@ -129,6 +153,16 @@ pub fn apply(mut entries: Vec<PortEntry>, opts: &FilterOptions) -> Vec<PortEntry
         }
         if let Some(ref port_filter) = opts.port
             && !port_filter.matches(e.port)
+        {
+            return false;
+        }
+        if let Some(ref name) = opts.process
+            && !matches_process_name(&e.process, name)
+        {
+            return false;
+        }
+        if let Some(ref pattern) = opts.grep
+            && !contains_process_pattern(&e.process, pattern)
         {
             return false;
         }
@@ -168,6 +202,8 @@ mod tests {
             udp_only: false,
             listen_only: false,
             port: None,
+            process: None,
+            grep: None,
             show_all: false,
         }
     }
@@ -263,6 +299,8 @@ mod tests {
             udp_only: false,
             listen_only: false,
             port: Some(PortFilter::Single(8080)),
+            process: None,
+            grep: None,
             show_all: false,
         };
 
@@ -653,6 +691,8 @@ mod tests {
                 start: 3000,
                 end: 3005,
             }),
+            process: None,
+            grep: None,
             show_all: false,
         };
         let result = apply(entries, &opts);
@@ -680,5 +720,249 @@ mod tests {
             result.iter().all(|e| e.proto == Protocol::Tcp),
             "all results should be TCP"
         );
+    }
+
+    // ── Process name filter tests ───────────────────────────────────
+
+    fn make_process_entry(port: u16, process: &str) -> PortEntry {
+        PortEntry {
+            port,
+            local_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            proto: Protocol::Tcp,
+            state: State::Listen,
+            pid: 1234,
+            process: process.into(),
+            user: "user".into(),
+            project: None,
+            app: None,
+            uptime_secs: None,
+        }
+    }
+
+    #[test]
+    fn process_filter_exact_match() {
+        let entries = vec![
+            make_process_entry(80, "nginx"),
+            make_process_entry(3000, "node"),
+            make_process_entry(5432, "postgres"),
+        ];
+        let opts = FilterOptions {
+            process: Some("node".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert_eq!(result.len(), 1, "process filter should match exactly one");
+        assert_eq!(result[0].port, 3000, "matched entry should be node on 3000");
+    }
+
+    #[test]
+    fn process_filter_strips_exe_suffix() {
+        let entries = vec![
+            make_process_entry(80, "node.exe"),
+            make_process_entry(443, "nginx"),
+        ];
+        let opts = FilterOptions {
+            process: Some("node".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert_eq!(
+            result.len(),
+            1,
+            "process filter should match node.exe when searching for node"
+        );
+        assert_eq!(result[0].port, 80, "matched entry should be node.exe on 80");
+    }
+
+    #[test]
+    fn process_filter_case_insensitive() {
+        let entries = vec![
+            make_process_entry(80, "Code.exe"),
+            make_process_entry(443, "nginx"),
+        ];
+        let opts = FilterOptions {
+            process: Some("code".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert_eq!(
+            result.len(),
+            1,
+            "process filter should match Code.exe case-insensitively"
+        );
+    }
+
+    #[test]
+    fn process_filter_no_match() {
+        let entries = vec![make_process_entry(80, "nginx")];
+        let opts = FilterOptions {
+            process: Some("node".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert!(
+            result.is_empty(),
+            "process filter should return empty on no match"
+        );
+    }
+
+    #[test]
+    fn process_filter_bypasses_relevance() {
+        let entries = vec![make_process_entry(12345, "unknown-daemon")];
+        let opts = FilterOptions {
+            process: Some("unknown-daemon".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert_eq!(
+            result.len(),
+            1,
+            "process filter should bypass relevance filter"
+        );
+    }
+
+    #[test]
+    fn process_filter_does_not_match_substring() {
+        let entries = vec![make_process_entry(80, "com.docker.backend")];
+        let opts = FilterOptions {
+            process: Some("docker".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert!(
+            result.is_empty(),
+            "process filter should not match substring of process name"
+        );
+    }
+
+    // ── Grep filter tests ───────────────────────────────────────────
+
+    #[test]
+    fn grep_filter_matches_substring() {
+        let entries = vec![
+            make_process_entry(80, "com.docker.backend"),
+            make_process_entry(443, "nginx"),
+        ];
+        let opts = FilterOptions {
+            grep: Some("docker".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert_eq!(result.len(), 1, "grep filter should match substring");
+        assert_eq!(
+            result[0].port, 80,
+            "matched entry should be com.docker.backend"
+        );
+    }
+
+    #[test]
+    fn grep_filter_case_insensitive() {
+        let entries = vec![make_process_entry(80, "Code.exe")];
+        let opts = FilterOptions {
+            grep: Some("code".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert_eq!(
+            result.len(),
+            1,
+            "grep filter should match case-insensitively"
+        );
+    }
+
+    #[test]
+    fn grep_filter_matches_full_name() {
+        let entries = vec![make_process_entry(80, "nginx")];
+        let opts = FilterOptions {
+            grep: Some("nginx".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert_eq!(
+            result.len(),
+            1,
+            "grep filter should match when pattern equals full name"
+        );
+    }
+
+    #[test]
+    fn grep_filter_no_match() {
+        let entries = vec![make_process_entry(80, "nginx")];
+        let opts = FilterOptions {
+            grep: Some("apache".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert!(
+            result.is_empty(),
+            "grep filter should return empty on no match"
+        );
+    }
+
+    #[test]
+    fn grep_filter_bypasses_relevance() {
+        let entries = vec![make_process_entry(12345, "some-random-daemon")];
+        let opts = FilterOptions {
+            grep: Some("random".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert_eq!(
+            result.len(),
+            1,
+            "grep filter should bypass relevance filter"
+        );
+    }
+
+    #[test]
+    fn grep_filter_matches_exe_suffix() {
+        let entries = vec![make_process_entry(80, "myapp.exe")];
+        let opts = FilterOptions {
+            grep: Some("exe".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert_eq!(
+            result.len(),
+            1,
+            "grep filter should match against the full process name including .exe"
+        );
+    }
+
+    #[test]
+    fn process_filter_combined_with_port() {
+        let entries = vec![
+            make_process_entry(80, "node"),
+            make_process_entry(3000, "node"),
+            make_process_entry(5432, "postgres"),
+        ];
+        let opts = FilterOptions {
+            port: Some(PortFilter::Single(3000)),
+            process: Some("node".to_string()),
+            ..default_filter()
+        };
+        let result = apply(entries, &opts);
+        assert_eq!(
+            result.len(),
+            1,
+            "combined port + process should narrow to one entry"
+        );
+        assert_eq!(result[0].port, 3000, "matched entry should be node on 3000");
+    }
+
+    #[test]
+    fn grep_filter_combined_with_tcp_only() {
+        let mut tcp_entry = make_process_entry(80, "com.docker.backend");
+        tcp_entry.proto = Protocol::Tcp;
+        let mut udp_entry = make_process_entry(53, "com.docker.backend");
+        udp_entry.proto = Protocol::Udp;
+        let opts = FilterOptions {
+            tcp_only: true,
+            grep: Some("docker".to_string()),
+            ..default_filter()
+        };
+        let result = apply(vec![tcp_entry, udp_entry], &opts);
+        assert_eq!(result.len(), 1, "grep + tcp_only should exclude UDP");
+        assert_eq!(result[0].proto, Protocol::Tcp, "result should be TCP");
     }
 }

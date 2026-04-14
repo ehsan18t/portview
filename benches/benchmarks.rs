@@ -58,6 +58,8 @@ fn bench_filter(c: &mut Criterion) {
         udp_only: false,
         listen_only: false,
         port: None,
+        process: None,
+        grep: None,
         show_all: true,
     };
     c.bench_function("filter_tcp_only_500", |b| {
@@ -73,6 +75,8 @@ fn bench_filter(c: &mut Criterion) {
         udp_only: false,
         listen_only: false,
         port: None,
+        process: None,
+        grep: None,
         show_all: false,
     };
     c.bench_function("filter_relevance_500", |b| {
@@ -88,6 +92,8 @@ fn bench_filter(c: &mut Criterion) {
         udp_only: false,
         listen_only: false,
         port: Some(filter::PortFilter::Single(250)),
+        process: None,
+        grep: None,
         show_all: true,
     };
     c.bench_function("filter_port_500", |b| {
@@ -103,6 +109,8 @@ fn bench_filter(c: &mut Criterion) {
         udp_only: false,
         listen_only: true,
         port: None,
+        process: None,
+        grep: None,
         show_all: false,
     };
     c.bench_function("filter_combined_500", |b| {
