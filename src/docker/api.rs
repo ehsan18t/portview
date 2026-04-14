@@ -65,9 +65,8 @@ pub fn parse_containers_json(json_body: &str) -> ContainerPortMap {
             let Some(public_port) = port.public_port else {
                 continue;
             };
-            let proto = match port.proto.unwrap_or("tcp") {
-                "udp" => Protocol::Udp,
-                _ => Protocol::Tcp,
+            let Some(proto) = parse_port_protocol(port.proto) else {
+                continue;
             };
 
             let port_count = port.port_range.unwrap_or(1);
@@ -96,6 +95,15 @@ where
         .map(str::parse)
         .transpose()
         .map_err(serde::de::Error::custom)
+}
+
+const fn parse_port_protocol(proto: Option<&str>) -> Option<Protocol> {
+    match proto {
+        None => Some(Protocol::Tcp),
+        Some(value) if value.eq_ignore_ascii_case("tcp") => Some(Protocol::Tcp),
+        Some(value) if value.eq_ignore_ascii_case("udp") => Some(Protocol::Udp),
+        Some(_) => None,
+    }
 }
 
 fn container_display_name(container: &DockerContainer<'_>) -> String {
@@ -282,6 +290,36 @@ mod tests {
         assert!(
             map.contains_key(&(None, 8080, Protocol::Tcp)),
             "missing Type should default to TCP"
+        );
+    }
+
+    #[test]
+    fn parse_protocol_matching_is_case_insensitive() {
+        let json = r#"[{
+            "Names": ["/dns"],
+            "Image": "bind9:latest",
+            "Ports": [{"PrivatePort": 53, "PublicPort": 5353, "Type": "UDP"}]
+        }]"#;
+        let map = parse_containers_json(json);
+
+        assert!(
+            map.contains_key(&(None, 5353, Protocol::Udp)),
+            "protocol parsing should accept uppercase protocol tokens"
+        );
+    }
+
+    #[test]
+    fn parse_unsupported_protocol_is_skipped() {
+        let json = r#"[{
+            "Names": ["/sigtran"],
+            "Image": "telecom:latest",
+            "Ports": [{"PrivatePort": 2905, "PublicPort": 2905, "Type": "sctp"}]
+        }]"#;
+        let map = parse_containers_json(json);
+
+        assert!(
+            map.is_empty(),
+            "unsupported protocols should not be coerced into TCP bindings"
         );
     }
 
