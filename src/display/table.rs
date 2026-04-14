@@ -595,9 +595,9 @@ mod tests {
         let name = "a".repeat(MAX_PROCESS_NAME_LEN + 5);
         let result = truncate_to_width(&name, MAX_PROCESS_NAME_LEN);
         assert_eq!(
-            result.chars().count(),
+            display_width(&result),
             MAX_PROCESS_NAME_LEN,
-            "truncated name should be exactly MAX_PROCESS_NAME_LEN chars"
+            "truncated ASCII names should fill the target column width exactly"
         );
         assert!(
             result.ends_with('\u{2026}'),
@@ -610,10 +610,9 @@ mod tests {
         // CJK characters are 3 bytes each in UTF-8
         let name = "\u{4e16}\u{754c}".repeat(MAX_PROCESS_NAME_LEN);
         let result = truncate_to_width(&name, MAX_PROCESS_NAME_LEN);
-        assert_eq!(
-            result.chars().count(),
-            MAX_PROCESS_NAME_LEN,
-            "truncated multi-byte name should be exactly MAX_PROCESS_NAME_LEN chars"
+        assert!(
+            display_width(&result) <= MAX_PROCESS_NAME_LEN,
+            "truncated multi-byte name should stay within the target display width"
         );
         assert!(
             result.ends_with('\u{2026}'),
