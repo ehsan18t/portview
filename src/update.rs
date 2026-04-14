@@ -82,33 +82,45 @@ fn print_available_update(current: &str, remote: &str) {
 }
 
 fn install_update(release: &Release, current: &str, remote: &str) -> Result<()> {
-    match detect_platform()? {
-        Platform::WindowsExe => install_release_asset(
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        install_release_asset(
             release,
             current,
             remote,
             "exe",
             download_and_replace_windows,
-        ),
-        Platform::LinuxTarGz => install_release_asset(
-            release,
-            current,
-            remote,
-            "tar.gz",
-            download_and_replace_linux_tar,
-        ),
-        Platform::LinuxDeb => {
-            notify_package_managed(release, "dpkg (Debian/Ubuntu)");
-            Ok(())
+        )
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        match detect_linux_install_method(&current_exe_path()?) {
+            LinuxInstallMethod::TarGz => install_release_asset(
+                release,
+                current,
+                remote,
+                "tar.gz",
+                download_and_replace_linux_tar,
+            ),
+            LinuxInstallMethod::Deb => {
+                notify_package_managed(release, "dpkg (Debian/Ubuntu)");
+                Ok(())
+            }
+            LinuxInstallMethod::Rpm => {
+                notify_package_managed(release, "rpm (Fedora/RHEL)");
+                Ok(())
+            }
         }
-        Platform::LinuxRpm => {
-            notify_package_managed(release, "rpm (Fedora/RHEL)");
-            Ok(())
-        }
-        Platform::Unsupported => {
-            notify_unsupported_platform(release);
-            Ok(())
-        }
+    }
+
+    #[cfg(not(any(
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    )))]
+    {
+        notify_unsupported_platform(release);
+        Ok(())
     }
 }
 
@@ -124,6 +136,10 @@ fn install_release_asset(
     Ok(())
 }
 
+#[cfg(not(any(
+    all(target_os = "windows", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "x86_64")
+)))]
 fn notify_unsupported_platform(release: &Release) {
     eprintln!();
     eprintln!("WARNING: Auto-update is not available on this platform.");
@@ -158,6 +174,7 @@ fn release_asset_candidates(tag_name: &str, ext: &str) -> Vec<String> {
     }
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn notify_package_managed(release: &Release, manager: &str) {
     eprintln!();
     eprintln!("WARNING: Auto-update is not available for your installation method.");
@@ -170,40 +187,24 @@ fn notify_package_managed(release: &Release, manager: &str) {
 // Platform detection
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Variants are platform-conditional; all used across targets.
-enum Platform {
-    WindowsExe,
-    LinuxTarGz,
-    LinuxDeb,
-    LinuxRpm,
-    Unsupported,
-}
-
-fn detect_platform() -> Result<Platform> {
-    if cfg!(target_os = "windows") && cfg!(target_arch = "x86_64") {
-        return Ok(Platform::WindowsExe);
-    }
-
-    if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
-        let binary_path = current_exe_path()?;
-        return Ok(detect_linux_install_method(&binary_path));
-    }
-
-    Ok(Platform::Unsupported)
+#[cfg(target_os = "linux")]
+enum LinuxInstallMethod {
+    TarGz,
+    Deb,
+    Rpm,
 }
 
 #[cfg(target_os = "linux")]
-fn detect_linux_install_method(binary_path: &Path) -> Platform {
+fn detect_linux_install_method(binary_path: &Path) -> LinuxInstallMethod {
     let path_str = binary_path.to_string_lossy();
 
     if path_owned_by("dpkg", "-S", &path_str) {
-        return Platform::LinuxDeb;
+        return LinuxInstallMethod::Deb;
     }
     if path_owned_by("rpm", "-qf", &path_str) {
-        return Platform::LinuxRpm;
+        return LinuxInstallMethod::Rpm;
     }
-    Platform::LinuxTarGz
+    LinuxInstallMethod::TarGz
 }
 
 /// Return true if `tool` reports that it owns `path` (exit status 0).
@@ -215,11 +216,6 @@ fn path_owned_by(tool: &str, flag: &str, path: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
-}
-
-#[cfg(not(target_os = "linux"))]
-const fn detect_linux_install_method(_binary_path: &Path) -> Platform {
-    Platform::Unsupported
 }
 
 // ---------------------------------------------------------------------------
@@ -571,16 +567,11 @@ fn download_and_replace_windows(asset: &Asset, binary_path: &Path) -> Result<()>
     Ok(())
 }
 
-#[cfg(not(windows))]
-fn download_and_replace_windows(_asset: &Asset, _binary_path: &Path) -> Result<()> {
-    bail!("Windows update is not available on this platform")
-}
-
 // ---------------------------------------------------------------------------
 // Linux tar.gz update
 // ---------------------------------------------------------------------------
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn download_and_replace_linux_tar(asset: &Asset, binary_path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     eprintln!("Downloading update...");
@@ -604,13 +595,13 @@ fn download_and_replace_linux_tar(asset: &Asset, binary_path: &Path) -> Result<(
     rename_result
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn download_archive(asset: &Asset, archive_path: &Path) -> Result<()> {
     curl_download_file(&asset.browser_download_url, archive_path)?;
     verify_download_size(archive_path, asset.size_bytes, 1024, "archive")
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn extract_portlens_binary(archive_path: &Path, extract_dir: &Path) -> Result<PathBuf> {
     recreate_directory(extract_dir)?;
 
@@ -631,7 +622,7 @@ fn extract_portlens_binary(archive_path: &Path, extract_dir: &Path) -> Result<Pa
     extraction_result
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn recreate_directory(path: &Path) -> Result<()> {
     if path.exists() {
         drop(std::fs::remove_dir_all(path));
@@ -641,7 +632,7 @@ fn recreate_directory(path: &Path) -> Result<()> {
         .with_context(|| format!("failed to create extraction directory: {}", path.display()))
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn extract_archive_with_tar(archive_path: &Path, extract_dir: &Path) -> Result<()> {
     let status = ProcessCommand::new("tar")
         .arg("-xzf")
@@ -664,7 +655,7 @@ fn extract_archive_with_tar(archive_path: &Path, extract_dir: &Path) -> Result<(
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn replace_linux_binary(temp_binary: &Path, binary_path: &Path) -> Result<()> {
     std::fs::rename(temp_binary, binary_path).with_context(|| {
         format!(
@@ -675,7 +666,7 @@ fn replace_linux_binary(temp_binary: &Path, binary_path: &Path) -> Result<()> {
 }
 
 /// Recursively search `dir` for a file named `portlens` and return its path.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn find_portlens_in_dir(dir: &Path) -> Result<PathBuf> {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {
@@ -731,11 +722,6 @@ fn verify_download_size(
         );
     }
     Ok(())
-}
-
-#[cfg(not(unix))]
-fn download_and_replace_linux_tar(_asset: &Asset, _binary_path: &Path) -> Result<()> {
-    bail!("Linux tar.gz update is not available on this platform")
 }
 
 // ---------------------------------------------------------------------------
