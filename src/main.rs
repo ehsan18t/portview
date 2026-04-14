@@ -142,65 +142,84 @@ fn normalize_args() -> Vec<OsString> {
 /// that `portlens kill update` is parsed as `kill` with a stray `update`
 /// argument (a usage error), not as `update` with a stray `kill` argument.
 fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
-    let subcommand_idx = args
+    let (main_args, command) = split_main_args_and_command(args)?;
+    reject_mixed_main_and_subcommand_args(&main_args, command.as_ref())?;
+    parse_main_cli(main_args, command)
+}
+
+fn split_main_args_and_command(args: Vec<OsString>) -> Result<(Vec<OsString>, Option<Command>)> {
+    let Some(idx) = args
         .iter()
-        .position(|a| matches!(a.to_str(), Some("update" | "kill")));
-
-    let (main_args, command) = if let Some(idx) = subcommand_idx
-        && args[idx] == "update"
-    {
-        let main: Vec<OsString> = args[..idx].to_vec();
-        let sub_args: Vec<OsString> = args[idx + 1..].to_vec();
-
-        let mut sub_pargs = pico_args::Arguments::from_vec(sub_args);
-        let check = sub_pargs.contains("--check");
-        let remaining = sub_pargs.finish();
-        if !remaining.is_empty() {
-            bail!("unexpected arguments for 'update' subcommand: {remaining:?}");
-        }
-        (main, Some(Command::Update { check }))
-    } else if let Some(idx) = subcommand_idx {
-        // Must be "kill" (the only other value the scan accepts).
-        let main: Vec<OsString> = args[..idx].to_vec();
-        let sub_args: Vec<OsString> = args[idx + 1..].to_vec();
-
-        let mut sub_pargs = pico_args::Arguments::from_vec(sub_args);
-        let port: Option<PortFilter> = sub_pargs
-            .opt_value_from_str(["-p", "--port"])
-            .context("invalid value for '--port' (expected a port or range like 3000-4000)")?;
-        validate_port_filter(port)?;
-        let pid: Option<u32> = sub_pargs
-            .opt_value_from_str("--pid")
-            .context("invalid value for '--pid' (expected a non-negative integer)")?;
-        let force = sub_pargs.contains(["-f", "--force"]);
-        let yes = sub_pargs.contains(["-y", "--yes"]);
-        let dry_run = sub_pargs.contains("--dry-run");
-        let json = sub_pargs.contains("--json");
-        let remaining = sub_pargs.finish();
-        if !remaining.is_empty() {
-            bail!("unexpected arguments for 'kill' subcommand: {remaining:?}");
-        }
-        match (port, pid) {
-            (None, None) => bail!("'kill' requires exactly one of '--port' or '--pid'"),
-            (Some(_), Some(_)) => bail!("'--port' and '--pid' cannot be used together"),
-            _ => {}
-        }
-        (
-            main,
-            Some(Command::Kill {
-                port,
-                pid,
-                force,
-                yes,
-                dry_run,
-                json,
-            }),
-        )
-    } else {
-        (args, None)
+        .position(|arg| matches!(arg.to_str(), Some("update" | "kill")))
+    else {
+        return Ok((args, None));
     };
 
-    if let Some(command) = command.as_ref()
+    let main_args = args[..idx].to_vec();
+    let sub_args = args[idx + 1..].to_vec();
+    let command = match args[idx].to_str() {
+        Some("update") => parse_update_command(sub_args)?,
+        Some("kill") => parse_kill_command(sub_args)?,
+        _ => unreachable!("subcommand scan only accepts known commands"),
+    };
+
+    Ok((main_args, Some(command)))
+}
+
+fn parse_update_command(args: Vec<OsString>) -> Result<Command> {
+    let mut pargs = pico_args::Arguments::from_vec(args);
+    let check = pargs.contains("--check");
+    let remaining = pargs.finish();
+    if !remaining.is_empty() {
+        bail!("unexpected arguments for 'update' subcommand: {remaining:?}");
+    }
+
+    Ok(Command::Update { check })
+}
+
+fn parse_kill_command(args: Vec<OsString>) -> Result<Command> {
+    let mut pargs = pico_args::Arguments::from_vec(args);
+    let port = parse_optional_port_filter(
+        &mut pargs,
+        "invalid value for '--port' (expected a port or range like 3000-4000)",
+    )?;
+    let pid: Option<u32> = pargs
+        .opt_value_from_str("--pid")
+        .context("invalid value for '--pid' (expected a non-negative integer)")?;
+    let force = pargs.contains(["-f", "--force"]);
+    let yes = pargs.contains(["-y", "--yes"]);
+    let dry_run = pargs.contains("--dry-run");
+    let json = pargs.contains("--json");
+    let remaining = pargs.finish();
+    if !remaining.is_empty() {
+        bail!("unexpected arguments for 'kill' subcommand: {remaining:?}");
+    }
+
+    validate_kill_selector(port, pid)?;
+
+    Ok(Command::Kill {
+        port,
+        pid,
+        force,
+        yes,
+        dry_run,
+        json,
+    })
+}
+
+fn validate_kill_selector(port: Option<PortFilter>, pid: Option<u32>) -> Result<()> {
+    match (port, pid) {
+        (None, None) => bail!("'kill' requires exactly one of '--port' or '--pid'"),
+        (Some(_), Some(_)) => bail!("'--port' and '--pid' cannot be used together"),
+        _ => Ok(()),
+    }
+}
+
+fn reject_mixed_main_and_subcommand_args(
+    main_args: &[OsString],
+    command: Option<&Command>,
+) -> Result<()> {
+    if let Some(command) = command
         && !main_args.is_empty()
     {
         bail!(
@@ -209,15 +228,19 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         );
     }
 
+    Ok(())
+}
+
+fn parse_main_cli(main_args: Vec<OsString>, command: Option<Command>) -> Result<Cli> {
     let mut pargs = pico_args::Arguments::from_vec(main_args);
 
     let tcp = pargs.contains(["-t", "--tcp"]);
     let udp = pargs.contains(["-u", "--udp"]);
     let listen = pargs.contains(["-l", "--listen"]);
-    let port: Option<PortFilter> = pargs
-        .opt_value_from_str(["-p", "--port"])
-        .context("invalid value for '--port' (expected a port number or range like 3000-4000)")?;
-    validate_port_filter(port)?;
+    let port = parse_optional_port_filter(
+        &mut pargs,
+        "invalid value for '--port' (expected a port number or range like 3000-4000)",
+    )?;
     let all = pargs.contains(["-a", "--all"]);
     let full = pargs.contains(["-f", "--full"]);
     let compact = pargs.contains(["-c", "--compact"]);
@@ -225,13 +248,7 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let json = pargs.contains("--json");
     let no_enrich = pargs.contains("--no-enrich");
 
-    // Replicate clap's `conflicts_with` validation.
-    if tcp && udp {
-        bail!("the argument '--tcp' cannot be used with '--udp'");
-    }
-    if listen && udp {
-        bail!("the argument '--listen' cannot be used with '--udp'");
-    }
+    validate_main_flag_conflicts(tcp, udp, listen)?;
 
     let remaining = pargs.finish();
     if !remaining.is_empty() {
@@ -251,6 +268,28 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         no_enrich,
         command,
     })
+}
+
+fn parse_optional_port_filter(
+    pargs: &mut pico_args::Arguments,
+    error_message: &'static str,
+) -> Result<Option<PortFilter>> {
+    let port = pargs
+        .opt_value_from_str(["-p", "--port"])
+        .context(error_message)?;
+    validate_port_filter(port)?;
+    Ok(port)
+}
+
+fn validate_main_flag_conflicts(tcp: bool, udp: bool, listen: bool) -> Result<()> {
+    if tcp && udp {
+        bail!("the argument '--tcp' cannot be used with '--udp'");
+    }
+    if listen && udp {
+        bail!("the argument '--listen' cannot be used with '--udp'");
+    }
+
+    Ok(())
 }
 
 /// Validate a [`PortFilter`] from `--port`, rejecting port 0 in either variant.
