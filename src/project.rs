@@ -86,48 +86,6 @@ pub(crate) fn walk_ancestors<'a>(
     })
 }
 
-/// Detect the project root path for a process.
-///
-/// Tries the working directory first, then falls back to parsing
-/// command-line arguments for absolute file paths.
-///
-/// `home` is the user's home directory used as an upward-walk ceiling.
-/// Pass the value resolved once by the caller to avoid repeated env
-/// lookups across many processes.
-///
-/// Returns the project root directory path, or `None` if no project
-/// root can be determined.
-pub fn detect_project_root(
-    cwd: Option<&Path>,
-    cmd: &[impl AsRef<OsStr>],
-    home: Option<&Path>,
-) -> Option<PathBuf> {
-    if let Some(cwd) = cwd
-        && let Some(root) = find_from_dir(cwd, home)
-    {
-        debug!(
-            "project root detected via cwd: cwd={} root={}",
-            cwd.display(),
-            root.display()
-        );
-        return Some(root);
-    }
-
-    for parent in absolute_cmd_parents(cmd) {
-        if let Some(root) = find_from_dir(parent, home) {
-            debug!(
-                "project root detected via cmd path: parent={} root={}",
-                parent.display(),
-                root.display()
-            );
-            return Some(root);
-        }
-    }
-
-    debug!("no project root detected");
-    None
-}
-
 /// Return the parent directories of the absolute paths found in `cmd`.
 pub(crate) fn absolute_cmd_parents<'a, S: AsRef<OsStr> + 'a>(
     cmd: &'a [S],
@@ -156,8 +114,8 @@ pub(crate) fn absolute_cmd_parents<'a, S: AsRef<OsStr> + 'a>(
 /// that repeated calls do not each query the OS environment.
 ///
 /// This is the cwd-only variant exposed for caching in the collector.
-/// Use [`detect_project_root`] for the full detection pipeline that also
-/// checks command-line arguments.
+/// The collector's `resolve` module combines this with
+/// `absolute_cmd_parents` to replicate the full detection pipeline.
 #[must_use]
 pub fn find_from_dir(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
     let result = walk_ancestors(start, home).find(|dir| has_marker(dir));
@@ -180,7 +138,7 @@ pub fn find_from_dir(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
 /// in which case only the `MAX_WALK_DEPTH` guards against over-traversal.
 ///
 /// Callers should call this **once** and pass the result into
-/// [`find_from_dir`] / [`detect_project_root`] to avoid repeated
+/// [`find_from_dir`] to avoid repeated
 /// environment-variable lookups across many process entries.
 #[must_use]
 pub fn home_dir() -> Option<PathBuf> {
@@ -321,7 +279,7 @@ mod tests {
     fn detect_known_project_markers() {
         for marker in ["package.json", "Cargo.toml", "go.mod", "pyproject.toml"] {
             let dir = setup_project(marker);
-            let result = detect_project_root(Some(dir.path()), &[] as &[&str], None);
+            let result = find_from_dir(dir.path(), None);
             assert_eq!(
                 result.as_deref(),
                 Some(dir.path()),
@@ -335,20 +293,14 @@ mod tests {
         let dir = setup_project("package.json");
         let sub = dir.path().join("src").join("deep");
         fs::create_dir_all(&sub).unwrap();
-        let result = detect_project_root(Some(&sub), &Vec::<String>::new(), None);
+        let result = find_from_dir(&sub, None);
         assert_eq!(result.as_deref(), Some(dir.path()));
     }
 
     #[test]
     fn detect_no_marker_returns_none() {
         let dir = TempDir::new().unwrap();
-        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new(), None);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn detect_none_cwd_returns_none() {
-        let result = detect_project_root(None, &Vec::<String>::new(), None);
+        let result = find_from_dir(dir.path(), None);
         assert!(result.is_none());
     }
 
@@ -356,7 +308,7 @@ mod tests {
     fn detect_csproj_extension_marker() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("MyApp.csproj"), "").unwrap();
-        let result = detect_project_root(Some(dir.path()), &Vec::<String>::new(), None);
+        let result = find_from_dir(dir.path(), None);
         assert_eq!(result.as_deref(), Some(dir.path()));
     }
 
@@ -367,7 +319,7 @@ mod tests {
         fs::create_dir_all(fake_path.parent().unwrap()).unwrap();
         fs::write(&fake_path, "").unwrap();
         let cmd = vec![fake_path.to_string_lossy().into_owned()];
-        let result = detect_project_root(None, &cmd, None);
+        let result = absolute_cmd_parents(&cmd).find_map(|parent| find_from_dir(parent, None));
         assert_eq!(result.as_deref(), Some(dir.path()));
     }
 
@@ -388,7 +340,7 @@ mod tests {
             script_path.to_string_lossy().into_owned(),
         ];
 
-        let result = detect_project_root(None, &cmd, None);
+        let result = absolute_cmd_parents(&cmd).find_map(|parent| find_from_dir(parent, None));
         assert_eq!(result.as_deref(), Some(project.path()));
     }
 
