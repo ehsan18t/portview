@@ -199,18 +199,7 @@ fn announce_dry_run(targets: &[ResolvedTarget], opts: &KillOptions) -> Result<()
     }
 
     for t in targets {
-        match t {
-            ResolvedTarget::Process(p) => {
-                writeln!(out, "  pid {} ({})", p.pid, p.process)?;
-            }
-            ResolvedTarget::Container(ct) => {
-                writeln!(
-                    out,
-                    "  container '{}' [proxy pid {} ({})]",
-                    ct.container_name, ct.proxy_pid, ct.proxy_process
-                )?;
-            }
-        }
+        write_target_line(&mut out, t)?;
     }
     Ok(())
 }
@@ -258,18 +247,7 @@ fn confirm(targets: &[ResolvedTarget], opts: &KillOptions) -> Result<bool> {
     }
 
     for t in targets {
-        match t {
-            ResolvedTarget::Process(p) => {
-                writeln!(err, "  pid {} ({})", p.pid, p.process)?;
-            }
-            ResolvedTarget::Container(ct) => {
-                writeln!(
-                    err,
-                    "  container '{}' [proxy pid {} ({})]",
-                    ct.container_name, ct.proxy_pid, ct.proxy_process
-                )?;
-            }
-        }
+        write_target_line(&mut err, t)?;
     }
     write!(err, "proceed? [y/N] ")?;
     err.flush()?;
@@ -294,6 +272,22 @@ fn count_target_kinds(targets: &[ResolvedTarget]) -> (usize, usize) {
         }
     }
     (n_proc, n_ctr)
+}
+
+/// Write a single indented target line to the given writer.
+fn write_target_line(writer: &mut impl Write, target: &ResolvedTarget) -> std::io::Result<()> {
+    match target {
+        ResolvedTarget::Process(p) => {
+            writeln!(writer, "  pid {} ({})", p.pid, p.process)
+        }
+        ResolvedTarget::Container(ct) => {
+            writeln!(
+                writer,
+                "  container '{}' [proxy pid {} ({})]",
+                ct.container_name, ct.proxy_pid, ct.proxy_process
+            )
+        }
+    }
 }
 
 const fn confirmation_verb(force: bool) -> &'static str {
