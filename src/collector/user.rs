@@ -31,11 +31,7 @@ pub(super) struct UserResolver {
 impl Default for UserResolver {
     fn default() -> Self {
         Self {
-            #[cfg(unix)]
-            names_by_uid: HashMap::new(),
-            #[cfg(windows)]
             names_by_sid: HashMap::new(),
-            #[cfg(windows)]
             users: Users::new_with_refreshed_list(),
         }
     }
