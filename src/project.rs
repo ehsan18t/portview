@@ -152,9 +152,9 @@ pub fn find_from_dir(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
 
 /// Return the current user's home directory, if it can be determined.
 ///
-/// On Unix, this prefers `SUDO_HOME` / `SUDO_UID` during `sudo` sessions,
-/// otherwise it resolves the home directory from the password database and
-/// only falls back to `HOME` if lookup fails. On Windows, it uses
+/// On Unix, this prefers passwd-database resolution for the invoking user
+/// (or `SUDO_UID` during `sudo` sessions), then falls back to `SUDO_HOME`,
+/// then `HOME` if lookup fails. On Windows, it uses
 /// `USERPROFILE`. Returns `None` when no home directory can be determined,
 /// in which case only the `MAX_WALK_DEPTH` guards against over-traversal.
 ///
@@ -165,14 +165,25 @@ pub fn find_from_dir(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
 pub fn home_dir() -> Option<PathBuf> {
     #[cfg(unix)]
     {
-        sudo_home_dir()
-            .or_else(|| preferred_home_uid().and_then(home_dir_from_uid))
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        select_home_dir(
+            preferred_home_uid().and_then(home_dir_from_uid),
+            sudo_home_dir(),
+            std::env::var_os("HOME").map(PathBuf::from),
+        )
     }
     #[cfg(windows)]
     {
         std::env::var_os("USERPROFILE").map(PathBuf::from)
     }
+}
+
+#[cfg(unix)]
+fn select_home_dir(
+    passwd_home: Option<PathBuf>,
+    sudo_home: Option<PathBuf>,
+    env_home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    passwd_home.or(sudo_home).or(env_home)
 }
 
 #[cfg(unix)]
@@ -442,6 +453,33 @@ mod tests {
             preferred_home_uid_from_env(Some(OsStr::new("not-a-uid")), 0),
             Some(0),
             "invalid sudo metadata should not break home-directory lookup"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn select_home_dir_prefers_passwd_lookup_over_sudo_home() {
+        let passwd_home = Some(PathBuf::from("/home/invoking-user"));
+        let sudo_home = Some(PathBuf::from("/root"));
+        let env_home = Some(PathBuf::from("/tmp/fallback"));
+
+        assert_eq!(
+            select_home_dir(passwd_home.clone(), sudo_home, env_home),
+            passwd_home,
+            "passwd-database resolution should win over environment-derived sudo home"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn select_home_dir_falls_back_to_sudo_home_before_home_env() {
+        let sudo_home = Some(PathBuf::from("/home/invoking-user"));
+        let env_home = Some(PathBuf::from("/root"));
+
+        assert_eq!(
+            select_home_dir(None, sudo_home.clone(), env_home),
+            sudo_home,
+            "sudo home should remain the fallback when passwd lookup is unavailable"
         );
     }
 }
