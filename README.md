@@ -48,6 +48,12 @@ portlens --port 8080
 # Filter to a port range (useful for microservice clusters)
 portlens --port 3000-4000
 
+# Filter by exact process name (without .exe suffix)
+portlens --process node
+
+# Filter by substring match in process name
+portlens --grep docker
+
 # Disable Docker/Podman and project-root enrichment
 portlens --no-enrich
 
@@ -129,6 +135,24 @@ Release builds use a size-focused profile (`opt-level = "z"`, LTO, symbol
 stripping, single codegen unit, and `panic = "abort"`) so the shipped CLI
 stays compact, especially on Windows.
 
+## Benchmarking
+
+The repository uses Criterion for microbenchmarks. Run the suite locally with:
+
+```bash
+cargo bench --bench benchmarks
+```
+
+Pull requests targeting `main` also run an advisory benchmark job in CI. That
+job compares a baseline-compatible subset against the merge-base, then runs the
+full PR-head suite and uploads a `benchmark-reports-<sha>` artifact containing
+both raw console logs and the generated `target/criterion/` reports so you can
+inspect exact timings and graphs from the Actions UI.
+
+CI also applies coarse absolute budgets to a small set of benchmarked hot
+paths. That separate budget layer catches large slowdowns for new benchmark
+names even before they have historical baselines on `main`.
+
 Windows builds embed an Explorer icon when `assets/icon.ico` is present. The
 current `assets/icon.png` is source artwork only. Add a multi-size `.ico` file
 at `assets/icon.ico` with at least `16x16`, `32x32`, `48x48`, and `256x256`
@@ -144,22 +168,24 @@ cargo install portlens
 
 ## CLI Reference
 
-| Flag            | Short | Description                                                                                |
-| --------------- | ----- | ------------------------------------------------------------------------------------------ |
-| `--all`         | `-a`  | Show all ports (bypass developer-relevance filter)                                         |
-| `--full`        | `-f`  | Show all columns (adds STATE, USER)                                                        |
-| `--compact`     | `-c`  | Use compact borderless table style                                                         |
-| `--tcp`         | `-t`  | Show only TCP sockets                                                                      |
-| `--udp`         | `-u`  | Show only UDP sockets                                                                      |
-| `--listen`      | `-l`  | Show only sockets in LISTEN state (TCP only)                                               |
-| `--port <PORT>` | `-p`  | Filter results to a port or range (e.g. `3000` or `3000-4000`) and bypass the smart filter |
-| `--no-header`   |       | Suppress the column header row                                                             |
-| `--json`        |       | Output results as a JSON array                                                             |
-| `--no-enrich`   |       | Disable Docker/Podman, project-root, and config-file enrichment                            |
-| `--version`     | `-v`  | Print the version string and exit                                                          |
-| `--help`        | `-h`  | Print usage information and exit                                                           |
+| Flag               | Short | Description                                                                                |
+| ------------------ | ----- | ------------------------------------------------------------------------------------------ |
+| `--all`            | `-a`  | Show all ports (bypass developer-relevance filter)                                         |
+| `--full`           | `-f`  | Show all columns (adds STATE, USER)                                                        |
+| `--compact`        | `-c`  | Use compact borderless table style                                                         |
+| `--tcp`            | `-t`  | Show only TCP sockets                                                                      |
+| `--udp`            | `-u`  | Show only UDP sockets                                                                      |
+| `--listen`         | `-l`  | Show only sockets in LISTEN state (TCP only)                                               |
+| `--port <PORT>`    | `-p`  | Filter results to a port or range (e.g. `3000` or `3000-4000`) and bypass the smart filter |
+| `--process <NAME>` |       | Filter by exact process name (case-insensitive, `.exe` suffix stripped)                    |
+| `--grep <TEXT>`    |       | Filter by substring match in process name (case-insensitive)                               |
+| `--no-header`      |       | Suppress the column header row                                                             |
+| `--json`           |       | Output results as a JSON array                                                             |
+| `--no-enrich`      |       | Disable Docker/Podman, project-root, and config-file enrichment                            |
+| `--version`        | `-v`  | Print the version string and exit                                                          |
+| `--help`           | `-h`  | Print usage information and exit                                                           |
 
-**Note:** `--tcp` and `--udp` are mutually exclusive. `--listen` also conflicts with `--udp` because UDP sockets do not have a LISTEN state.
+**Note:** `--tcp` and `--udp` are mutually exclusive. `--listen` also conflicts with `--udp` because UDP sockets do not have a LISTEN state. `--process` and `--grep` are mutually exclusive.
 
 ### Subcommand: `kill`
 
@@ -225,6 +251,8 @@ Additional columns with `--full`:
 **Developer-relevant filter:** By default, PortLens only shows ports belonging to known developer tools, detected projects, or Docker containers. Use `--all` to see everything.
 
 **Explicit port queries:** `--port <PORT>` always shows matching sockets even when the owning process is not recognized as developer-relevant. Accepts a single port (`--port 3000`) or an inclusive range (`--port 3000-4000`), which is particularly useful when debugging microservice clusters assigned a port block.
+
+**Process name filtering:** `--process <NAME>` filters by exact process name after stripping the `.exe` suffix, case-insensitively. For example, `--process node` matches both `node` and `node.exe`. `--grep <TEXT>` filters by substring match against the full process name, so `--grep docker` matches `com.docker.backend`. Both flags bypass the developer-relevance filter and are mutually exclusive.
 
 **Interface awareness:** Listeners on the same port remain distinct when they bind to different local addresses, so `127.0.0.1:8080` and `0.0.0.0:8080` do not get merged into one row.
 

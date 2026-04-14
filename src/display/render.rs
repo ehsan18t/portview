@@ -64,9 +64,10 @@ pub(super) fn display_width(value: &str) -> usize {
     let mut chars = value.chars().peekable();
 
     while let Some(ch) = chars.next() {
+        // CRLF is a line ending with zero horizontal display width.
+        // Consume the pair so `\r` is not counted independently.
         if ch == '\r' && chars.peek() == Some(&'\n') {
             chars.next();
-            width += 1;
             continue;
         }
 
@@ -298,6 +299,15 @@ mod tests {
             display_width("世界"),
             4,
             "CJK glyphs should consume two columns each"
+        );
+    }
+
+    #[test]
+    fn display_width_treats_crlf_as_zero_width() {
+        assert_eq!(
+            display_width("hello\r\nworld"),
+            10,
+            "CRLF line endings should have zero horizontal display width"
         );
     }
 

@@ -25,6 +25,8 @@ struct Cli {
     udp: bool,
     listen: bool,
     port: Option<PortFilter>,
+    process: Option<String>,
+    grep: Option<String>,
     all: bool,
     full: bool,
     compact: bool,
@@ -119,9 +121,9 @@ fn init_logger() {
 /// Normalize CLI arguments to lowercase for case-insensitive matching.
 ///
 /// Skips argv\[0\] (the program name/path) and returns the rest lowercased.
-/// Safe because `PortLens` has no string-valued arguments - only numeric
-/// port values, flags, and subcommand names, none of which are affected
-/// by lowercasing.
+/// String-valued arguments (`--process`, `--grep`) are lowercased too,
+/// which is intentional because process-name matching is always
+/// case-insensitive.
 fn normalize_args() -> Vec<OsString> {
     std::env::args_os()
         .skip(1)
@@ -241,6 +243,12 @@ fn parse_main_cli(main_args: Vec<OsString>, command: Option<Command>) -> Result<
         &mut pargs,
         "invalid value for '--port' (expected a port number or range like 3000-4000)",
     )?;
+    let process: Option<String> = pargs
+        .opt_value_from_str("--process")
+        .context("invalid value for '--process' (expected a process name)")?;
+    let grep: Option<String> = pargs
+        .opt_value_from_str("--grep")
+        .context("invalid value for '--grep' (expected a search pattern)")?;
     let all = pargs.contains(["-a", "--all"]);
     let full = pargs.contains(["-f", "--full"]);
     let compact = pargs.contains(["-c", "--compact"]);
@@ -248,7 +256,7 @@ fn parse_main_cli(main_args: Vec<OsString>, command: Option<Command>) -> Result<
     let json = pargs.contains("--json");
     let no_enrich = pargs.contains("--no-enrich");
 
-    validate_main_flag_conflicts(tcp, udp, listen)?;
+    validate_main_flag_conflicts(tcp, udp, listen, process.as_deref(), grep.as_deref())?;
 
     let remaining = pargs.finish();
     if !remaining.is_empty() {
@@ -260,6 +268,8 @@ fn parse_main_cli(main_args: Vec<OsString>, command: Option<Command>) -> Result<
         udp,
         listen,
         port,
+        process,
+        grep,
         all,
         full,
         compact,
@@ -281,12 +291,21 @@ fn parse_optional_port_filter(
     Ok(port)
 }
 
-fn validate_main_flag_conflicts(tcp: bool, udp: bool, listen: bool) -> Result<()> {
+fn validate_main_flag_conflicts(
+    tcp: bool,
+    udp: bool,
+    listen: bool,
+    process: Option<&str>,
+    grep: Option<&str>,
+) -> Result<()> {
     if tcp && udp {
         bail!("the argument '--tcp' cannot be used with '--udp'");
     }
     if listen && udp {
         bail!("the argument '--listen' cannot be used with '--udp'");
+    }
+    if process.is_some() && grep.is_some() {
+        bail!("the argument '--process' cannot be used with '--grep'");
     }
 
     Ok(())
@@ -319,6 +338,8 @@ fn print_help() {
     println!("  -u, --udp            Show only UDP sockets");
     println!("  -l, --listen         Show only sockets in LISTEN state (TCP only)");
     println!("  -p, --port <PORT>    Filter results to a port or range (e.g. 3000 or 3000-4000)");
+    println!("      --process <NAME> Filter by exact process name (without .exe suffix)");
+    println!("      --grep <TEXT>    Filter by substring match in process name");
     println!("  -a, --all            Show all ports (disable developer-relevant filter)");
     println!("  -f, --full           Show all columns (adds STATE, USER)");
     println!("  -c, --compact        Use compact borderless table style");
@@ -390,6 +411,8 @@ fn run(cli: Cli) -> Result<u8> {
             udp_only: cli.udp,
             listen_only: cli.listen,
             port: cli.port,
+            process: cli.process,
+            grep: cli.grep,
             show_all: cli.all,
         },
     );
@@ -597,5 +620,61 @@ mod tests {
                 .contains("top-level options cannot be used with the 'update' subcommand"),
             "update should reject stray top-level flags before the subcommand"
         );
+    }
+
+    #[test]
+    fn parse_cli_accepts_process_flag() {
+        let cli =
+            parse_cli(args(&["--process", "node"])).expect("--process with value should parse");
+        assert_eq!(
+            cli.process.as_deref(),
+            Some("node"),
+            "--process should store the process name"
+        );
+    }
+
+    #[test]
+    fn parse_cli_accepts_grep_flag() {
+        let cli = parse_cli(args(&["--grep", "docker"])).expect("--grep with value should parse");
+        assert_eq!(
+            cli.grep.as_deref(),
+            Some("docker"),
+            "--grep should store the search pattern"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_process_and_grep_together() {
+        let error = parse_cli(args(&["--process", "node", "--grep", "docker"]))
+            .expect_err("--process and --grep should be mutually exclusive");
+
+        assert!(
+            format!("{error:#}").contains("'--process' cannot be used with '--grep'"),
+            "--process + --grep should produce a conflict error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn parse_cli_process_combined_with_port() {
+        let cli = parse_cli(args(&["--process", "node", "--port", "3000"]))
+            .expect("--process combined with --port should parse");
+        assert_eq!(
+            cli.process.as_deref(),
+            Some("node"),
+            "process should be set"
+        );
+        assert_eq!(
+            cli.port,
+            Some(PortFilter::Single(3000)),
+            "port should be set"
+        );
+    }
+
+    #[test]
+    fn parse_cli_grep_combined_with_tcp() {
+        let cli = parse_cli(args(&["--grep", "docker", "--tcp"]))
+            .expect("--grep combined with --tcp should parse");
+        assert_eq!(cli.grep.as_deref(), Some("docker"), "grep should be set");
+        assert!(cli.tcp, "tcp flag should be set");
     }
 }

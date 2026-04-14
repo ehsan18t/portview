@@ -23,7 +23,7 @@
 #   - Scope is optional, wrapped in parentheses: feat(cleaner): ...
 #   - Colon + space after type/scope is required
 #   - Description must start with lowercase letter
-#   - Description must be 5-72 characters
+#   - Description must be 5-200 characters
 #   - No period at the end of the subject line
 #
 # Examples:

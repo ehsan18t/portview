@@ -4,65 +4,77 @@
 
 $ErrorActionPreference = "Stop"
 
-$hooksDir = Join-Path (Join-Path $PSScriptRoot "..") "hooks"
-$gitHooksDir = Join-Path (Join-Path (Join-Path $PSScriptRoot "..") ".git") "hooks"
+$repoRoot = Join-Path $PSScriptRoot ".."
+$hooksDir = Join-Path $repoRoot "hooks"
 
-# Ensure .git/hooks directory exists
+function Get-GitHooksDirectory {
+    param([string]$RepositoryRoot)
+
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        throw "git is required to install hooks"
+    }
+
+    $hookPath = git -C $RepositoryRoot rev-parse --path-format=absolute --git-path hooks
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to resolve the git hooks directory; run this script inside a git working tree"
+    }
+
+    return $hookPath.Trim()
+}
+
+function Install-Hook {
+    param(
+        [string]$HooksDirectory,
+        [string]$HookName
+    )
+
+    $source = Join-Path $hooksDir $HookName
+    $target = Join-Path $HooksDirectory $HookName
+
+    if (Test-Path $target) {
+        Write-Output "  ${HookName}: overwriting existing hook"
+    }
+
+    Copy-Item $source $target -Force
+    Write-Output "  ${HookName}: installed"
+}
+
+$gitHooksDir = Get-GitHooksDirectory -RepositoryRoot $repoRoot
+
 if (-not (Test-Path $gitHooksDir)) {
     New-Item -ItemType Directory -Path $gitHooksDir -Force | Out-Null
 }
 
-# Install pre-commit hook
-$preCommitSource = Join-Path $hooksDir "pre-commit"
-$preCommitTarget = Join-Path $gitHooksDir "pre-commit"
+Write-Output ""
+Write-Output "Installing PortLens git hooks..."
+Write-Output ""
 
-if (Test-Path $preCommitTarget) {
-    Write-Host "Pre-commit hook already exists, overwriting..." -ForegroundColor Yellow
-}
-Copy-Item $preCommitSource $preCommitTarget -Force
-Write-Host "Pre-commit hook installed." -ForegroundColor Green
+Install-Hook -HooksDirectory $gitHooksDir -HookName "pre-commit"
+Install-Hook -HooksDirectory $gitHooksDir -HookName "pre-push"
+Install-Hook -HooksDirectory $gitHooksDir -HookName "commit-msg"
 
-# Install pre-push hook
-$prePushSource = Join-Path $hooksDir "pre-push"
-$prePushTarget = Join-Path $gitHooksDir "pre-push"
-
-if (Test-Path $prePushTarget) {
-    Write-Host "Pre-push hook already exists, overwriting..." -ForegroundColor Yellow
-}
-Copy-Item $prePushSource $prePushTarget -Force
-Write-Host "Pre-push hook installed." -ForegroundColor Green
-
-# Install commit-msg hook
-$commitMsgSource = Join-Path $hooksDir "commit-msg"
-$commitMsgTarget = Join-Path $gitHooksDir "commit-msg"
-
-if (Test-Path $commitMsgTarget) {
-    Write-Host "Commit-msg hook already exists, overwriting..." -ForegroundColor Yellow
-}
-Copy-Item $commitMsgSource $commitMsgTarget -Force
-Write-Host "Commit-msg hook installed." -ForegroundColor Green
-
-Write-Host ""
-Write-Host "Git hooks installed successfully!" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "Quality gates will now run automatically:" -ForegroundColor Cyan
-Write-Host "  Commit-msg (validates commit message format):" -ForegroundColor White
-Write-Host "    Format: <type>(<scope>): <description>"
-Write-Host "    Types:  feat, fix, docs, style, refactor, perf, test, build, ci, chore"
-Write-Host ""
-Write-Host "  Pre-commit (fast checks before each commit):" -ForegroundColor White
-Write-Host "    1. cargo fmt --check    (formatting)"
-Write-Host "    2. cross-target clippy  (Linux + Windows cfg lints)"
-Write-Host "    3. cargo test           (tests)"
-Write-Host ""
-Write-Host "  Pre-push (full CI-equivalent checks before each push):" -ForegroundColor White
-Write-Host "    1. cargo fmt --check    (formatting)"
-Write-Host "    2. cross-target clippy  (Linux + Windows cfg lints)"
-Write-Host "    3. cargo test           (tests)"
-Write-Host "    4. cargo bench --no-run (benchmark compile)"
-Write-Host "    5. cargo build          (debug build)"
-Write-Host "    6. cargo doc            (strict rustdoc checks)"
-Write-Host "    7. cargo deny check     (dependency audit)"
-Write-Host ""
-Write-Host "Install the supported lint targets once:" -ForegroundColor Cyan
-Write-Host "  rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-msvc"
+Write-Output ""
+Write-Output "Git hooks installed successfully!"
+Write-Output ""
+Write-Output "Quality gates will now run automatically:"
+Write-Output ""
+Write-Output "  Commit-msg (validates commit message format):"
+Write-Output "    Format: <type>(<scope>): <description>"
+Write-Output "    Types:  feat, fix, docs, style, refactor, perf, test, build, ci, chore"
+Write-Output ""
+Write-Output "  Pre-commit (fast checks before each commit):"
+Write-Output "    1. cargo fmt --check    (formatting)"
+Write-Output "    2. cross-target clippy  (Linux + Windows cfg lints)"
+Write-Output "    3. cargo test           (tests)"
+Write-Output ""
+Write-Output "  Pre-push (full CI-equivalent checks before each push):"
+Write-Output "    1. cargo fmt --check    (formatting)"
+Write-Output "    2. cross-target clippy  (Linux + Windows cfg lints)"
+Write-Output "    3. cargo test           (tests)"
+Write-Output "    4. cargo bench --no-run (benchmark compile)"
+Write-Output "    5. cargo build          (debug build)"
+Write-Output "    6. cargo doc            (strict rustdoc checks)"
+Write-Output "    7. cargo deny check     (dependency audit)"
+Write-Output ""
+Write-Output "Install the supported lint targets once:"
+Write-Output "  rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-msvc"
