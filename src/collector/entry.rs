@@ -4,8 +4,8 @@
 //! sysinfo, queries the caches in [`CollectContext`], and assembles the
 //! final enrichment fields (container, project, framework, uptime).
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sysinfo::{ProcessRefreshKind, UpdateKind};
@@ -92,6 +92,7 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
             &l.process.name,
             exe_name,
             exe_path,
+            context.framework_cache,
         )
     } else {
         detect_process_app(&l.process.name, exe_name)
@@ -129,6 +130,7 @@ fn detect_enriched_app(
     process_name: &str,
     exe_name: Option<&str>,
     exe_path: Option<&Path>,
+    framework_cache: &mut HashMap<PathBuf, Option<AppLabel>>,
 ) -> Option<AppLabel> {
     if let Some(info) = container
         && let Some(label) = framework::detect_from_image(info)
@@ -140,12 +142,27 @@ fn detect_enriched_app(
 
     if let Some(root) = project_root
         && config_detection_allowed(process_app.as_deref(), exe_path, root)
-        && let Some(label) = framework::detect_from_config(root)
+        && let Some(label) = cached_detect_from_config(root, framework_cache)
     {
         return Some(label);
     }
 
     process_app
+}
+
+/// Look up the framework config detection result in the cache, or compute
+/// and store it on a cache miss. Avoids redundant `read_dir` and file I/O
+/// when multiple entries share the same project root.
+fn cached_detect_from_config(
+    project_root: &Path,
+    cache: &mut HashMap<PathBuf, Option<AppLabel>>,
+) -> Option<AppLabel> {
+    if let Some(cached) = cache.get(project_root) {
+        return cached.clone();
+    }
+    let result = framework::detect_from_config(project_root);
+    cache.insert(project_root.to_path_buf(), result.clone());
+    result
 }
 
 fn detect_process_app(process_name: &str, exe_name: Option<&str>) -> Option<AppLabel> {
@@ -256,7 +273,14 @@ mod tests {
         let project = TempDir::new().unwrap();
         fs::write(project.path().join("next.config.js"), "").unwrap();
 
-        let app = detect_enriched_app(None, Some(project.path()), "node", None, None);
+        let app = detect_enriched_app(
+            None,
+            Some(project.path()),
+            "node",
+            None,
+            None,
+            &mut HashMap::new(),
+        );
 
         assert_eq!(app.as_deref(), Some("Next.js"));
     }
@@ -280,6 +304,7 @@ mod tests {
             "service.exe",
             Some("service.exe"),
             Some(exe_path.as_path()),
+            &mut HashMap::new(),
         );
 
         assert_eq!(app.as_deref(), Some("Rust"));
@@ -300,6 +325,7 @@ mod tests {
             "pwsh.exe",
             Some("pwsh.exe"),
             Some(exe_path.as_path()),
+            &mut HashMap::new(),
         );
 
         assert_eq!(

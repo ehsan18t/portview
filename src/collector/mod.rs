@@ -44,7 +44,7 @@ use sysinfo::{ProcessesToUpdate, System};
 
 use crate::docker::{self, ContainerPortMap};
 use crate::project;
-use crate::types::PortEntry;
+use crate::types::{AppLabel, PortEntry};
 
 use tcp_state::TcpStateIndex;
 use user::UserResolver;
@@ -61,6 +61,7 @@ pub(in crate::collector) struct CollectContext<'a> {
     pub(in crate::collector) now_epoch: u64,
     pub(in crate::collector) deep_enrichment: bool,
     pub(in crate::collector) project_cache: &'a mut HashMap<PathBuf, Option<PathBuf>>,
+    pub(in crate::collector) framework_cache: &'a mut HashMap<PathBuf, Option<AppLabel>>,
     pub(in crate::collector) process_names: &'a mut HashSet<Arc<str>>,
     pub(in crate::collector) home: Option<&'a Path>,
     #[cfg(target_os = "linux")]
@@ -140,6 +141,7 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
 
     let mut project_cache: HashMap<PathBuf, Option<PathBuf>> =
         HashMap::with_capacity(raw_listeners.len());
+    let mut framework_cache: HashMap<PathBuf, Option<AppLabel>> = HashMap::new();
     let mut process_names: HashSet<Arc<str>> = HashSet::new();
     #[cfg(target_os = "linux")]
     let mut podman_rootless_resolver = docker::RootlessPodmanResolver::default();
@@ -159,6 +161,7 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
         now_epoch,
         deep_enrichment: options.deep_enrichment,
         project_cache: &mut project_cache,
+        framework_cache: &mut framework_cache,
         process_names: &mut process_names,
         home: home.as_deref(),
         #[cfg(target_os = "linux")]
