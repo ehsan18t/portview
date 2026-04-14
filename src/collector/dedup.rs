@@ -151,7 +151,7 @@ const fn address_preference(address: IpAddr) -> u8 {
     }
 }
 
-pub(super) fn is_docker_proxy_process(process_name: &str) -> bool {
+pub fn is_docker_proxy_process(process_name: &str) -> bool {
     const DOCKER_PROXY_PROCESSES: &[&str] = &[
         "wslrelay",
         "com.docker.backend",

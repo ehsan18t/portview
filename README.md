@@ -163,7 +163,7 @@ cargo install portlens
 Terminate processes by port or PID. Exactly one of `--port` or `--pid` must be provided.
 
 ```bash
-portlens kill --port 3000          # Kill every process using local port :3000 (graceful on Unix)
+portlens kill --port 3000          # Free local port :3000 (graceful on Unix)
 portlens kill --pid 12345          # Kill a single PID
 portlens kill --port 3000 --force  # SIGKILL on Unix (Windows is always forceful)
 portlens kill --port 3000 --yes    # Skip the confirmation prompt
@@ -172,16 +172,18 @@ portlens kill --pid 12345 --dry-run --json
 portlens kill --pid 12345 --json
 ```
 
-| Flag           | Short | Description                                                                 |
-| -------------- | ----- | --------------------------------------------------------------------------- |
-| `--port <num>` | `-p`  | Kill every process using this local port (dedups IPv4/IPv6 and workers)     |
-| `--pid <num>`  |       | Kill the specified PID                                                      |
-| `--force`      | `-f`  | Forceful termination (SIGKILL on Unix; no-op on Windows — already forceful) |
-| `--yes`        | `-y`  | Skip interactive confirmation                                               |
-| `--dry-run`    |       | List resolved targets without signaling anything                            |
-| `--json`       |       | Emit the kill report or dry-run target list as JSON                         |
+| Flag           | Short | Description                                                                         |
+| -------------- | ----- | ----------------------------------------------------------------------------------- |
+| `--port <num>` | `-p`  | Kill TCP listeners or UDP binders on this local port (dedups IPv4/IPv6 and workers) |
+| `--pid <num>`  |       | Kill the specified PID                                                              |
+| `--force`      | `-f`  | Forceful termination (SIGKILL on Unix; no-op on Windows - already forceful)         |
+| `--yes`        | `-y`  | Skip interactive confirmation                                                       |
+| `--dry-run`    |       | List resolved targets without signaling anything                                    |
+| `--json`       |       | Emit the kill report or dry-run target list as JSON                                 |
 
 Safety: PortLens refuses to kill PID 0 (kernel/idle), PID 1 (init) on Unix, PID 4 (System) on Windows, and its own PID. Permission errors are reported per-PID with a hint to retry elevated; already-exited processes are treated as idempotent successes.
+
+**Container-aware kill:** When `--port` targets a port published by a Docker or Podman container, PortLens stops the container via the daemon API (`POST /containers/{id}/stop`) instead of killing the proxy PID. This safely frees the port without disrupting the Docker/Podman daemon. With `--force`, it uses the kill endpoint for immediate termination. The confirmation prompt and `--dry-run` output will show the container name and short ID. If the daemon is unreachable, the failure is reported explicitly. Use `--pid` if you genuinely need to signal the proxy process directly.
 
 ### Subcommand: `update`
 
@@ -232,7 +234,7 @@ based on available width.
 
 **App/framework detection:** Identifies the technology behind a port using three strategies (in priority order):
 1. Docker/Podman image name (e.g. `postgres:16` -> PostgreSQL)
-2. Config files in the project root (e.g. `next.config.mjs` -> Next.js)
+2. Config files in the project root when the listener is a known runtime or a project-owned executable (e.g. `next.config.mjs` -> Next.js)
 3. Process executable name (e.g. `nginx` -> Nginx)
 
 **Low-overhead mode:** `--no-enrich` disables Docker/Podman probing, project-root walking, config-file scanning, and command-line path fallback. Core socket data, users, uptime, and process-name detection still remain available. Combine it with `--all` for the rawest view.

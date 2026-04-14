@@ -27,7 +27,7 @@ mod ipc;
 mod podman;
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use log::debug;
 
@@ -46,6 +46,8 @@ pub(crate) use podman::{RootlessPodmanResolver, lookup_rootless_podman_container
 /// Metadata about a running container that has published ports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerInfo {
+    /// Full container ID (hex string) for API calls, empty when unavailable.
+    pub id: String,
     /// Container name (e.g. "backend-postgres-1").
     pub name: String,
     /// Container image (e.g. "postgres:16").
@@ -55,10 +57,73 @@ pub struct ContainerInfo {
 /// Maps `(host_ip, host_port, protocol)` to container info.
 pub type ContainerPortMap = HashMap<(Option<IpAddr>, u16, Protocol), ContainerInfo>;
 
+/// Result of matching a socket against published container port bindings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublishedContainerMatch<'a> {
+    /// Exactly one container binding matched the socket.
+    Match(&'a ContainerInfo),
+    /// No published container binding matched the socket.
+    NotFound,
+    /// Multiple distinct published bindings matched and no safe choice exists.
+    Ambiguous,
+}
+
 /// Handle for an in-progress Docker/Podman container detection.
 ///
 /// Created by [`start_detection`] and consumed by [`await_detection`].
 pub type DetectionHandle = std::sync::mpsc::Receiver<Option<ContainerPortMap>>;
+
+/// Match a local socket against known published container bindings.
+///
+/// Exact `(host_ip, port, proto)` matches win first. If the daemon reported an
+/// unspecified host IP (stored as `None`), the wildcard binding is used next.
+/// For known proxy/helper processes, callers may enable `allow_proxy_fallback`
+/// to accept a unique `(port, proto)` match when the proxy socket address does
+/// not line up with the published host IP.
+#[must_use]
+pub(crate) fn lookup_published_container(
+    container_map: &ContainerPortMap,
+    socket: SocketAddr,
+    proto: Protocol,
+    allow_proxy_fallback: bool,
+) -> PublishedContainerMatch<'_> {
+    if let Some(container) = container_map.get(&(Some(socket.ip()), socket.port(), proto)) {
+        return PublishedContainerMatch::Match(container);
+    }
+
+    if let Some(container) = container_map.get(&(None, socket.port(), proto)) {
+        return PublishedContainerMatch::Match(container);
+    }
+
+    if allow_proxy_fallback {
+        return unique_published_container(container_map, socket.port(), proto);
+    }
+
+    PublishedContainerMatch::NotFound
+}
+
+fn unique_published_container(
+    container_map: &ContainerPortMap,
+    port: u16,
+    proto: Protocol,
+) -> PublishedContainerMatch<'_> {
+    let mut matches = container_map
+        .iter()
+        .filter(|((_, candidate_port, candidate_proto), _)| {
+            *candidate_port == port && *candidate_proto == proto
+        })
+        .map(|(_, container)| container);
+
+    let Some(first) = matches.next() else {
+        return PublishedContainerMatch::NotFound;
+    };
+
+    if matches.all(|candidate| candidate == first) {
+        PublishedContainerMatch::Match(first)
+    } else {
+        PublishedContainerMatch::Ambiguous
+    }
+}
 
 // ── Detection orchestration ──────────────────────────────────────────
 
@@ -111,6 +176,113 @@ pub fn await_detection(handle: DetectionHandle) -> ContainerPortMap {
             ContainerPortMap::default()
         }
     }
+}
+
+// ── Container stop / kill ────────────────────────────────────────────
+
+/// Result of attempting to stop or kill a container via the daemon API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// Container was successfully stopped (HTTP 204).
+    Stopped,
+    /// Container was already stopped (HTTP 304 for stop, 409 for kill).
+    AlreadyStopped,
+    /// Container was not found (HTTP 404).
+    NotFound,
+    /// The daemon could not be reached or returned an unexpected status.
+    Failed,
+}
+
+/// Stop or kill a running container via the Docker/Podman daemon API.
+///
+/// When `force` is false, sends `POST /containers/{id}/stop` (graceful
+/// SIGTERM with a 10-second timeout before SIGKILL). When `force` is
+/// true, sends `POST /containers/{id}/kill` (immediate SIGKILL).
+///
+/// Tries all known transports (TCP, Unix sockets, Windows named pipes)
+/// and returns the outcome from the first transport that connects.
+#[must_use]
+pub fn stop_container(id: &str, force: bool) -> StopOutcome {
+    let endpoint = if force {
+        format!("/containers/{id}/kill")
+    } else {
+        format!("/containers/{id}/stop")
+    };
+    debug!(
+        "attempting container stop: id={} force={force} endpoint={endpoint}",
+        &id[..id.len().min(12)]
+    );
+
+    send_stop_request(&endpoint).map_or_else(
+        || {
+            debug!("no transport could reach container runtime daemon for stop");
+            StopOutcome::Failed
+        },
+        |status_code| interpret_stop_status(status_code, force),
+    )
+}
+
+/// Map an HTTP status code from the stop/kill endpoint to `StopOutcome`.
+fn interpret_stop_status(status_code: u16, force: bool) -> StopOutcome {
+    match status_code {
+        204 => StopOutcome::Stopped,
+        // POST /containers/{id}/stop returns 304 when already stopped.
+        304 => StopOutcome::AlreadyStopped,
+        // POST /containers/{id}/kill returns 409 when container is not running.
+        409 if force => StopOutcome::AlreadyStopped,
+        404 => StopOutcome::NotFound,
+        _ => {
+            debug!("unexpected status code from container stop endpoint: {status_code}");
+            StopOutcome::Failed
+        }
+    }
+}
+
+/// Try each known transport until one successfully sends the POST request.
+fn send_stop_request(endpoint: &str) -> Option<u16> {
+    // TCP via DOCKER_HOST takes precedence (both platforms).
+    if let Some(addr) = ipc::docker_host_tcp_addr()
+        && let Some(code) = ipc::stop_via_tcp(&addr, endpoint)
+    {
+        return Some(code);
+    }
+
+    send_stop_request_platform(endpoint)
+}
+
+#[cfg(unix)]
+fn send_stop_request_platform(endpoint: &str) -> Option<u16> {
+    use std::path::Path;
+
+    // Honour DOCKER_HOST unix:// if set.
+    if let Some(path) = ipc::docker_host_unix_path()
+        && let Some(code) = ipc::stop_via_unix_socket(Path::new(&path), endpoint)
+    {
+        return Some(code);
+    }
+
+    // Safety: getuid() is a simple syscall with no preconditions.
+    let uid = unsafe { libc::getuid() };
+    for path in ipc::unix_socket_paths(uid, crate::project::home_dir()) {
+        if let Some(code) = ipc::stop_via_unix_socket(Path::new(&path), endpoint) {
+            return Some(code);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn send_stop_request_platform(endpoint: &str) -> Option<u16> {
+    // Honour DOCKER_HOST npipe:// if set.
+    if let Some(path) = ipc::docker_host_npipe_path()
+        && let Some(code) = ipc::stop_via_named_pipe(&path, endpoint)
+    {
+        return Some(code);
+    }
+
+    DEFAULT_PIPE_PATHS
+        .iter()
+        .find_map(|path| ipc::stop_via_named_pipe(path, endpoint))
 }
 
 // ── Platform-specific daemon queries ─────────────────────────────────
@@ -193,8 +365,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use crate::types::Protocol;
 
     #[cfg(unix)]
     #[test]
@@ -214,5 +388,82 @@ mod tests {
             .expect("podman/docker ports should survive multi-daemon merging");
         assert_eq!(container.name, "backend-postgres-1");
         assert_eq!(container.image, "postgres:16");
+    }
+
+    #[test]
+    fn lookup_published_container_keeps_protocol_bindings_separate() {
+        let mut map = ContainerPortMap::new();
+        map.insert(
+            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 53, Protocol::Tcp),
+            ContainerInfo {
+                id: "tcp53".to_string(),
+                name: "dns-tcp".to_string(),
+                image: "bind9".to_string(),
+            },
+        );
+        map.insert(
+            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 53, Protocol::Udp),
+            ContainerInfo {
+                id: "udp53".to_string(),
+                name: "dns-udp".to_string(),
+                image: "bind9".to_string(),
+            },
+        );
+
+        let tcp = lookup_published_container(
+            &map,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 53),
+            Protocol::Tcp,
+            false,
+        );
+        let udp = lookup_published_container(
+            &map,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 53),
+            Protocol::Udp,
+            false,
+        );
+
+        assert!(matches!(
+            tcp,
+            PublishedContainerMatch::Match(info) if info.name == "dns-tcp"
+        ));
+        assert!(matches!(
+            udp,
+            PublishedContainerMatch::Match(info) if info.name == "dns-udp"
+        ));
+    }
+
+    #[test]
+    fn lookup_published_container_marks_ambiguous_proxy_matches() {
+        let mut map = ContainerPortMap::new();
+        map.insert(
+            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
+            ContainerInfo {
+                id: "api-a".to_string(),
+                name: "api-a".to_string(),
+                image: "node:22".to_string(),
+            },
+        );
+        map.insert(
+            (
+                Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+                8080,
+                Protocol::Tcp,
+            ),
+            ContainerInfo {
+                id: "api-b".to_string(),
+                name: "api-b".to_string(),
+                image: "node:22".to_string(),
+            },
+        );
+
+        let result = lookup_published_container(
+            &map,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8080),
+            Protocol::Tcp,
+            true,
+        );
+
+        assert_eq!(result, PublishedContainerMatch::Ambiguous);
     }
 }

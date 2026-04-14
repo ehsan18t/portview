@@ -22,6 +22,8 @@ use std::io::{BufRead, BufReader, Read};
 pub(super) struct ParsedHeaders {
     /// Whether the HTTP status code is 2xx.
     pub status_ok: bool,
+    /// Raw HTTP status code (e.g. 200, 204, 304, 404).
+    pub status_code: u16,
     /// Byte offset where the response body begins (after `\r\n\r\n`).
     #[cfg(any(windows, test))]
     pub body_offset: usize,
@@ -93,11 +95,13 @@ fn read_response_headers(reader: &mut impl BufRead) -> Option<ParsedHeaders> {
         return None;
     }
 
-    let status_ok = response.code.is_some_and(|c| (200..300).contains(&c));
+    let status_code = response.code.unwrap_or(0);
+    let status_ok = (200..300).contains(&status_code);
     let (content_length, transfer_encoding) = extract_header_metadata(response.headers);
 
     Some(ParsedHeaders {
         status_ok,
+        status_code,
         #[cfg(any(windows, test))]
         body_offset: 0,
         content_length,
@@ -177,6 +181,29 @@ fn consume_chunked_trailers(reader: &mut impl BufRead) -> Option<()> {
 }
 
 // ---------------------------------------------------------------------------
+// POST request helpers (container stop / kill)
+// ---------------------------------------------------------------------------
+
+/// Build an HTTP/1.0 POST request for the given daemon endpoint path.
+pub(super) fn format_post_request(path: &str) -> Vec<u8> {
+    format!("POST {path} HTTP/1.0\r\nHost: localhost\r\n\r\n").into_bytes()
+}
+
+/// Send an HTTP POST request and return the response status code.
+///
+/// Used for Docker API calls that return no body (e.g. container stop/kill
+/// which respond with 204 No Content). Only the status code is needed.
+pub(super) fn send_http_post_status(
+    stream: &mut (impl Read + std::io::Write),
+    path: &str,
+) -> Option<u16> {
+    stream.write_all(&format_post_request(path)).ok()?;
+    let mut reader = BufReader::new(stream);
+    let headers = read_response_headers(&mut reader)?;
+    Some(headers.status_code)
+}
+
+// ---------------------------------------------------------------------------
 // Buffered path (Windows named pipes / tests)
 // ---------------------------------------------------------------------------
 
@@ -193,11 +220,13 @@ pub(super) fn parse_response_headers(response: &[u8]) -> Option<ParsedHeaders> {
         return None;
     };
 
-    let status_ok = parsed.code.is_some_and(|c| (200..300).contains(&c));
+    let status_code = parsed.code.unwrap_or(0);
+    let status_ok = (200..300).contains(&status_code);
     let (content_length, transfer_encoding) = extract_header_metadata(parsed.headers);
 
     Some(ParsedHeaders {
         status_ok,
+        status_code,
         body_offset,
         content_length,
         transfer_encoding,

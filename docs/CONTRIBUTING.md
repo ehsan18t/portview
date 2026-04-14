@@ -115,20 +115,25 @@ src/
   main.rs        — CLI parsing, command dispatch
   lib.rs         — library crate root (module re-exports for benchmarks)
   types.rs       — PortEntry struct shared across all modules
-  collector.rs   — socket enumeration + enrichment orchestration
+  collector/     — socket enumeration, deduplication, and enrichment
   filter.rs      — user-specified and relevance filtering logic
-  display.rs     — table and JSON rendering
-  docker.rs      — Docker/Podman port detection via socket API
+  display/       — table, JSON, terminal-width, and tips rendering
+  docker/        — Docker/Podman daemon transport and port matching
+  kill/          — process/container target resolution and termination
+  update.rs      — GitHub release checking and self-update logic
   framework.rs   — app/framework detection from images, configs, processes
   project.rs     — project root detection via cwd/cmd marker walk
 ```
 
 ### Architecture Boundaries
 
-- `collector.rs` owns all OS interaction. No platform-specific code elsewhere.
+- The `collector/` module owns socket enumeration, deduplication, and process
+  metadata lookup. No unrelated module should duplicate that work.
 - `filter.rs` owns all filtering logic.
-- `display.rs` owns all rendering logic.
-- `docker.rs`, `framework.rs`, and `project.rs` provide best-effort enrichment only.
+- The `display/` module owns all rendering logic.
+- The `docker/` module owns container daemon communication and port matching.
+- `framework.rs` and `project.rs` provide best-effort enrichment only.
+- The `kill/` module owns target resolution and termination flows.
 
 Interactive table output also emits a shortcut footer on stderr. Preserve that
 stdout/stderr split when changing display behavior so piped data stays clean.

@@ -43,7 +43,7 @@ enum Command {
     },
     /// Terminate a process by port or PID.
     Kill {
-        /// Target port: kill every process using this local port.
+        /// Target port: kill TCP listeners or UDP binders on this local port.
         port: Option<u16>,
         /// Target PID: kill this specific process.
         pid: Option<u32>,
@@ -56,6 +56,15 @@ enum Command {
         /// Emit the kill report as JSON.
         json: bool,
     },
+}
+
+impl Command {
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::Update { .. } => "update",
+            Self::Kill { .. } => "kill",
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -190,6 +199,15 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         (args, None)
     };
 
+    if let Some(command) = command.as_ref()
+        && !main_args.is_empty()
+    {
+        bail!(
+            "top-level options cannot be used with the '{}' subcommand: {main_args:?}",
+            command.name()
+        );
+    }
+
     let mut pargs = pico_args::Arguments::from_vec(main_args);
 
     let tcp = pargs.contains(["-t", "--tcp"]);
@@ -271,7 +289,9 @@ fn print_help() {
     println!("      --check          Only check for a new version; do not install");
     println!();
     println!("Subcommand 'kill' options (exactly one of --port or --pid is required):");
-    println!("  -p, --port <PORT>    Kill every process using this local port");
+    println!("  -p, --port <PORT>    Kill TCP listeners or UDP binders on this local port");
+    println!("                       (stops published containers via daemon API, not proxy PID)");
+    println!("                       (use --pid if daemon lookup fails or is ambiguous)");
     println!("      --pid <PID>      Kill the given PID");
     println!("  -f, --force          Forceful termination (SIGKILL on Unix)");
     println!("  -y, --yes            Skip interactive confirmation");
@@ -395,6 +415,30 @@ mod tests {
         assert!(
             format!("{error:#}").contains("unexpected arguments for 'kill' subcommand"),
             "the earliest subcommand token should win"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_top_level_flags_before_kill_subcommand() {
+        let error = parse_cli(args(&["--json", "kill", "--pid", "1234"]))
+            .expect_err("top-level flags must not be silently ignored for kill");
+
+        assert!(
+            format!("{error:#}")
+                .contains("top-level options cannot be used with the 'kill' subcommand"),
+            "kill should reject stray top-level flags before the subcommand"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_top_level_flags_before_update_subcommand() {
+        let error = parse_cli(args(&["--port", "3000", "update"]))
+            .expect_err("top-level flags must not be silently ignored for update");
+
+        assert!(
+            format!("{error:#}")
+                .contains("top-level options cannot be used with the 'update' subcommand"),
+            "update should reject stray top-level flags before the subcommand"
         );
     }
 }
