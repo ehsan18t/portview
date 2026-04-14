@@ -150,22 +150,22 @@ cargo install portlens
 
 ## CLI Reference
 
-| Flag            | Short | Description                                                                                |
-| --------------- | ----- | ------------------------------------------------------------------------------------------ |
-| `--all`         | `-a`  | Show all ports (bypass developer-relevance filter)                                         |
-| `--full`        | `-f`  | Show all columns (adds STATE, USER)                                                        |
-| `--compact`     | `-c`  | Use compact borderless table style                                                         |
-| `--tcp`         | `-t`  | Show only TCP sockets                                                                      |
-| `--udp`         | `-u`  | Show only UDP sockets                                                                      |
-| `--listen`      | `-l`  | Show only sockets in LISTEN state (TCP only)                                               |
-| `--port <PORT>` | `-p`  | Filter results to a port or range (e.g. `3000` or `3000-4000`) and bypass the smart filter |
-| `--process <NAME>` |     | Filter by exact process name (case-insensitive, `.exe` suffix stripped)                    |
-| `--grep <TEXT>`  |       | Filter by substring match in process name (case-insensitive)                               |
-| `--no-header`   |       | Suppress the column header row                                                             |
-| `--json`        |       | Output results as a JSON array                                                             |
-| `--no-enrich`   |       | Disable Docker/Podman, project-root, and config-file enrichment                            |
-| `--version`     | `-v`  | Print the version string and exit                                                          |
-| `--help`        | `-h`  | Print usage information and exit                                                           |
+| Flag               | Short | Description                                                                                |
+| ------------------ | ----- | ------------------------------------------------------------------------------------------ |
+| `--all`            | `-a`  | Show all ports (bypass developer-relevance filter)                                         |
+| `--full`           | `-f`  | Show all columns (adds STATE, USER)                                                        |
+| `--compact`        | `-c`  | Use compact borderless table style                                                         |
+| `--tcp`            | `-t`  | Show only TCP sockets                                                                      |
+| `--udp`            | `-u`  | Show only UDP sockets                                                                      |
+| `--listen`         | `-l`  | Show only sockets in LISTEN state (TCP only)                                               |
+| `--port <PORT>`    | `-p`  | Filter results to a port or range (e.g. `3000` or `3000-4000`) and bypass the smart filter |
+| `--process <NAME>` |       | Filter by exact process name (case-insensitive, `.exe` suffix stripped)                    |
+| `--grep <TEXT>`    |       | Filter by substring match in process name (case-insensitive)                               |
+| `--no-header`      |       | Suppress the column header row                                                             |
+| `--json`           |       | Output results as a JSON array                                                             |
+| `--no-enrich`      |       | Disable Docker/Podman, project-root, and config-file enrichment                            |
+| `--version`        | `-v`  | Print the version string and exit                                                          |
+| `--help`           | `-h`  | Print usage information and exit                                                           |
 
 **Note:** `--tcp` and `--udp` are mutually exclusive. `--listen` also conflicts with `--udp` because UDP sockets do not have a LISTEN state. `--process` and `--grep` are mutually exclusive.
 

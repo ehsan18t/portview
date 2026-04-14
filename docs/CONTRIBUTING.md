@@ -51,6 +51,10 @@ bash scripts/install-hooks.sh
 Both scripts install pre-commit, pre-push, and commit-msg hooks that enforce
 quality gates locally before CI.
 
+The installers resolve Git's real hooks directory through Git metadata, so they
+work from normal clones and linked worktrees instead of assuming `.git/hooks`
+is always a plain directory under the working tree.
+
 The Clippy gate uses `scripts/check-platform-clippy.sh` on shell-based setups
 and `scripts/check-platform-clippy.ps1` on Windows PowerShell. The host target
 still runs with `--all-targets`, while the other supported target lints

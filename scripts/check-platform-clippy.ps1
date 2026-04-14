@@ -17,13 +17,13 @@ function Assert-Command {
         return
     }
 
-    Write-Host ""
-    Write-Host "X REQUIRED COMMAND NOT FOUND"
-    Write-Host "  '$Name' is required to run the cross-target Clippy gate."
+    Write-Output ""
+    Write-Output "X REQUIRED COMMAND NOT FOUND"
+    Write-Output "  '$Name' is required to run the cross-target Clippy gate."
     exit 1
 }
 
-function Ensure-RustToolchainPath {
+function Add-RustToolchainPath {
     if (Get-Command cargo -ErrorAction SilentlyContinue) {
         return
     }
@@ -36,7 +36,7 @@ function Ensure-RustToolchainPath {
     }
 }
 
-Ensure-RustToolchainPath
+Add-RustToolchainPath
 
 Assert-Command cargo
 Assert-Command rustc
@@ -56,31 +56,31 @@ $hostTarget = $hostTargetLine -replace '^host:\s*', ''
 
 $missingTargets = @($targets | Where-Object { $_ -notin $installedTargets })
 if ($missingTargets.Count -gt 0) {
-    Write-Host ""
-    Write-Host "X MISSING RUST TARGETS"
-    Write-Host "  Install the supported lint targets first:"
-    Write-Host "    rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-msvc"
-    Write-Host ""
-    Write-Host "  Missing targets:"
+    Write-Output ""
+    Write-Output "X MISSING RUST TARGETS"
+    Write-Output "  Install the supported lint targets first:"
+    Write-Output "    rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-msvc"
+    Write-Output ""
+    Write-Output "  Missing targets:"
     foreach ($target in $missingTargets) {
-        Write-Host "    - $target"
+        Write-Output "    - $target"
     }
     exit 1
 }
 
 if ($targets -contains $hostTarget) {
-    Write-Host "Detected supported host target: $hostTarget"
+    Write-Output "Detected supported host target: $hostTarget"
 } else {
-    Write-Host "Host target '$hostTarget' is not one of the supported release targets."
-    Write-Host "Running lib+bins Clippy for both supported targets."
+    Write-Output "Host target '$hostTarget' is not one of the supported release targets."
+    Write-Output "Running lib+bins Clippy for both supported targets."
 }
 
 foreach ($target in $targets) {
     if ($target -eq $hostTarget) {
-        Write-Host "-> Running native clippy for $target (all-targets)..."
+        Write-Output "-> Running native clippy for $target (all-targets)..."
         cargo clippy --locked --all-targets --target $target -- -D warnings
     } else {
-        Write-Host "-> Running cross-target clippy for $target (lib + bins)..."
+        Write-Output "-> Running cross-target clippy for $target (lib + bins)..."
         cargo clippy --locked --lib --bins --target $target -- -D warnings
     }
 
@@ -88,5 +88,5 @@ foreach ($target in $targets) {
         exit $LASTEXITCODE
     }
 
-    Write-Host "  OK $target"
+    Write-Output "  OK $target"
 }

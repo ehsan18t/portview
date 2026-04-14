@@ -7,7 +7,27 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOOKS_DIR="$REPO_ROOT/hooks"
-GIT_HOOKS_DIR="$REPO_ROOT/.git/hooks"
+
+require_command() {
+    command_name="$1"
+
+    if command -v "$command_name" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo ""
+    echo "X REQUIRED COMMAND NOT FOUND"
+    echo "  '$command_name' is required to install hooks."
+    exit 1
+}
+
+resolve_git_hooks_dir() {
+    git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-path hooks
+}
+
+require_command git
+
+GIT_HOOKS_DIR="$(resolve_git_hooks_dir)"
 
 # Ensure .git/hooks directory exists
 mkdir -p "$GIT_HOOKS_DIR"
