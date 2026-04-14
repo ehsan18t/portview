@@ -150,6 +150,11 @@ fn contains_process_pattern(process: &str, pattern: &str) -> bool {
 /// An explicit port, process, or grep query bypasses the developer-relevance
 /// filter so targeted searches never hide a matching socket just because the
 /// process is not recognized.
+///
+/// Process-name and grep filters run as separate `retain` passes so
+/// the hot-path closure (protocol/state/port/relevance) stays small
+/// and does not pay code-generation overhead for the string-matching
+/// functions when those filters are inactive.
 #[must_use]
 pub fn apply(mut entries: Vec<PortEntry>, opts: &FilterOptions) -> Vec<PortEntry> {
     let bypass_relevance =
@@ -170,21 +175,19 @@ pub fn apply(mut entries: Vec<PortEntry>, opts: &FilterOptions) -> Vec<PortEntry
         {
             return false;
         }
-        if let Some(ref name) = opts.process
-            && !matches_process_name(&e.process, name)
-        {
-            return false;
-        }
-        if let Some(ref pattern) = opts.grep
-            && !contains_process_pattern(&e.process, pattern)
-        {
-            return false;
-        }
         if !bypass_relevance && !is_relevant(e) {
             return false;
         }
         true
     });
+
+    if let Some(ref name) = opts.process {
+        entries.retain(|e| matches_process_name(&e.process, name));
+    }
+
+    if let Some(ref pattern) = opts.grep {
+        entries.retain(|e| contains_process_pattern(&e.process, pattern));
+    }
 
     entries
 }
