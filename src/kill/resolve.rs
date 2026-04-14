@@ -53,7 +53,7 @@ pub enum ResolvedTarget {
 /// Enumerate targets owning sockets on `port`.
 ///
 /// Runs Docker/Podman detection in parallel with port enumeration. When
-/// the listening process is a known Docker proxy and the daemon reports a
+/// the matching entry is a known Docker proxy/helper and the daemon reports a
 /// container for that port, the resolver yields a [`ContainerTarget`].
 /// Otherwise it produces a regular process [`Target`].
 pub fn targets_for_port(port: u16) -> Result<Vec<ResolvedTarget>> {
