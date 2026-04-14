@@ -45,6 +45,9 @@ portlens --listen
 # Filter to a specific port
 portlens --port 8080
 
+# Filter to a port range (useful for microservice clusters)
+portlens --port 3000-4000
+
 # Disable Docker/Podman and project-root enrichment
 portlens --no-enrich
 
@@ -141,20 +144,20 @@ cargo install portlens
 
 ## CLI Reference
 
-| Flag           | Short | Description                                                             |
-| -------------- | ----- | ----------------------------------------------------------------------- |
-| `--all`        | `-a`  | Show all ports (bypass developer-relevance filter)                      |
-| `--full`       | `-f`  | Show all columns (adds STATE, USER)                                     |
-| `--compact`    | `-c`  | Use compact borderless table style                                      |
-| `--tcp`        | `-t`  | Show only TCP sockets                                                   |
-| `--udp`        | `-u`  | Show only UDP sockets                                                   |
-| `--listen`     | `-l`  | Show only sockets in LISTEN state (TCP only)                            |
-| `--port <num>` | `-p`  | Filter results to the specified port number and bypass the smart filter |
-| `--no-header`  |       | Suppress the column header row                                          |
-| `--json`       |       | Output results as a JSON array                                          |
-| `--no-enrich`  |       | Disable Docker/Podman, project-root, and config-file enrichment         |
-| `--version`    | `-v`  | Print the version string and exit                                       |
-| `--help`       | `-h`  | Print usage information and exit                                        |
+| Flag            | Short | Description                                                                                |
+| --------------- | ----- | ------------------------------------------------------------------------------------------ |
+| `--all`         | `-a`  | Show all ports (bypass developer-relevance filter)                                         |
+| `--full`        | `-f`  | Show all columns (adds STATE, USER)                                                        |
+| `--compact`     | `-c`  | Use compact borderless table style                                                         |
+| `--tcp`         | `-t`  | Show only TCP sockets                                                                      |
+| `--udp`         | `-u`  | Show only UDP sockets                                                                      |
+| `--listen`      | `-l`  | Show only sockets in LISTEN state (TCP only)                                               |
+| `--port <PORT>` | `-p`  | Filter results to a port or range (e.g. `3000` or `3000-4000`) and bypass the smart filter |
+| `--no-header`   |       | Suppress the column header row                                                             |
+| `--json`        |       | Output results as a JSON array                                                             |
+| `--no-enrich`   |       | Disable Docker/Podman, project-root, and config-file enrichment                            |
+| `--version`     | `-v`  | Print the version string and exit                                                          |
+| `--help`        | `-h`  | Print usage information and exit                                                           |
 
 **Note:** `--tcp` and `--udp` are mutually exclusive. `--listen` also conflicts with `--udp` because UDP sockets do not have a LISTEN state.
 
@@ -164,6 +167,7 @@ Terminate processes by port or PID. Exactly one of `--port` or `--pid` must be p
 
 ```bash
 portlens kill --port 3000          # Free local port :3000 (graceful on Unix)
+portlens kill --port 3000-4000     # Free all listeners in a port range
 portlens kill --pid 12345          # Kill a single PID
 portlens kill --port 3000 --force  # SIGKILL on Unix (Windows is always forceful)
 portlens kill --port 3000 --yes    # Skip the confirmation prompt
@@ -172,14 +176,14 @@ portlens kill --pid 12345 --dry-run --json
 portlens kill --pid 12345 --json
 ```
 
-| Flag           | Short | Description                                                                         |
-| -------------- | ----- | ----------------------------------------------------------------------------------- |
-| `--port <num>` | `-p`  | Kill TCP listeners or UDP binders on this local port (dedups IPv4/IPv6 and workers) |
-| `--pid <num>`  |       | Kill the specified PID                                                              |
-| `--force`      | `-f`  | Forceful termination (SIGKILL on Unix; no-op on Windows - already forceful)         |
-| `--yes`        | `-y`  | Skip interactive confirmation                                                       |
-| `--dry-run`    |       | List resolved targets without signaling anything                                    |
-| `--json`       |       | Emit the kill report or dry-run target list as JSON                                 |
+| Flag            | Short | Description                                                                             |
+| --------------- | ----- | --------------------------------------------------------------------------------------- |
+| `--port <PORT>` | `-p`  | Kill TCP listeners or UDP binders on a local port or range (e.g. `3000` or `3000-4000`) |
+| `--pid <num>`   |       | Kill the specified PID                                                                  |
+| `--force`       | `-f`  | Forceful termination (SIGKILL on Unix; no-op on Windows - already forceful)             |
+| `--yes`         | `-y`  | Skip interactive confirmation                                                           |
+| `--dry-run`     |       | List resolved targets without signaling anything                                        |
+| `--json`        |       | Emit the kill report or dry-run target list as JSON                                     |
 
 Safety: PortLens refuses to kill PID 0 (kernel/idle), PID 1 (init) on Unix, PID 4 (System) on Windows, and its own PID. Permission errors are reported per-PID with a hint to retry elevated; already-exited processes are treated as idempotent successes.
 
@@ -220,7 +224,7 @@ Additional columns with `--full`:
 
 **Developer-relevant filter:** By default, PortLens only shows ports belonging to known developer tools, detected projects, or Docker containers. Use `--all` to see everything.
 
-**Explicit port queries:** `--port <num>` always shows matching sockets even when the owning process is not recognized as developer-relevant.
+**Explicit port queries:** `--port <PORT>` always shows matching sockets even when the owning process is not recognized as developer-relevant. Accepts a single port (`--port 3000`) or an inclusive range (`--port 3000-4000`), which is particularly useful when debugging microservice clusters assigned a port block.
 
 **Interface awareness:** Listeners on the same port remain distinct when they bind to different local addresses, so `127.0.0.1:8080` and `0.0.0.0:8080` do not get merged into one row.
 

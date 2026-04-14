@@ -12,10 +12,11 @@ use crate::types::{PortEntry, Protocol, State};
 
 /// Key for clustering Docker proxy entries.
 ///
-/// Within a given (port, protocol, state) group, all proxy entries
-/// originate from the same container mapping, so project and app
-/// labels are always identical and do not need to be part of the key.
-type ProxyClusterKey = (u16, Protocol, State);
+/// Proxy rows are only safe to collapse when they agree on the logical
+/// container identity attached during enrichment. Different containers can
+/// publish the same port on different host IPs, so the key must include the
+/// best-effort container labels in addition to the socket tuple.
+type ProxyClusterKey = (u16, Protocol, State, Option<String>, Option<String>);
 
 /// Deduplicate entries that share the same user-visible logical socket.
 ///
@@ -65,11 +66,15 @@ fn collapse_docker_proxy_clusters(entries: Vec<PortEntry>) -> Vec<PortEntry> {
 }
 
 fn docker_proxy_cluster_key(entry: &PortEntry) -> Option<ProxyClusterKey> {
-    (is_docker_proxy_process(&entry.process) && has_docker_enrichment(entry)).then_some((
-        entry.port,
-        entry.proto,
-        entry.state,
-    ))
+    (is_docker_proxy_process(&entry.process) && has_docker_enrichment(entry)).then(|| {
+        (
+            entry.port,
+            entry.proto,
+            entry.state,
+            entry.project.clone(),
+            entry.app.as_ref().map(ToString::to_string),
+        )
+    })
 }
 
 fn deduplicate_group(entries: Vec<PortEntry>) -> Vec<PortEntry> {
@@ -334,6 +339,43 @@ mod tests {
             entry.project.as_deref(),
             Some("my-postgres"),
             "should keep the richest proxy entry"
+        );
+    }
+
+    #[test]
+    fn dedup_keeps_distinct_proxies_for_same_port_on_different_host_ips() {
+        let mut first = make_entry(8080, Protocol::Tcp);
+        first.local_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        first.pid = 2001;
+        first.process = "com.docker.backend.exe".into();
+        first.project = Some("api-a".to_string());
+        first.app = Some("Node.js".into());
+
+        let mut second = make_entry(8080, Protocol::Tcp);
+        second.local_addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        second.pid = 2002;
+        second.process = "com.docker.backend.exe".into();
+        second.project = Some("api-b".to_string());
+        second.app = Some("Node.js".into());
+
+        let result = deduplicate(vec![first, second]);
+
+        assert_eq!(
+            result.len(),
+            2,
+            "same-port proxy rows for different containers must remain distinct"
+        );
+        assert!(
+            result
+                .iter()
+                .any(|entry| entry.project.as_deref() == Some("api-a")),
+            "first container should remain visible"
+        );
+        assert!(
+            result
+                .iter()
+                .any(|entry| entry.project.as_deref() == Some("api-b")),
+            "second container should remain visible"
         );
     }
 

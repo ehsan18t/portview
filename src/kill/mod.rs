@@ -19,19 +19,20 @@ use anyhow::{Result, bail};
 use self::platform::{kill_pid, pid_exists};
 use self::report::KillReportEntry;
 use self::resolve::{ResolvedTarget, Target, target_for_pid, targets_for_port};
+use crate::filter::PortFilter;
 
 /// Target selector for a kill invocation.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum KillTarget {
-    /// Kill TCP listeners or UDP binders on this local port.
-    Port(u16),
+    /// Kill TCP listeners or UDP binders on one or more local ports.
+    Port(PortFilter),
     /// Kill a single PID directly.
     Pid(u32),
 }
 
 /// Options controlling a kill invocation.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct KillOptions {
     /// What to kill.
     pub target: KillTarget,
@@ -54,12 +55,14 @@ pub struct KillOptions {
 ///
 /// Errors propagate only for unexpected conditions such as socket enumeration
 /// failure or stdout/stderr write failure.
-pub fn run(opts: KillOptions) -> Result<u8> {
-    let targets = resolve_targets(&opts)?;
+pub fn run(opts: &KillOptions) -> Result<u8> {
+    let targets = resolve_targets(opts)?;
 
     if targets.is_empty() {
-        let msg = match opts.target {
-            KillTarget::Port(p) => format!("no TCP listener or UDP binder is using local port {p}"),
+        let msg = match &opts.target {
+            KillTarget::Port(f) => {
+                format!("no TCP listener or UDP binder is using local port {f}")
+            }
             KillTarget::Pid(pid) => format!("no process with pid {pid}"),
         };
         eprintln!("{msg}");
@@ -68,13 +71,13 @@ pub fn run(opts: KillOptions) -> Result<u8> {
 
     reject_protected_pids(&targets)?;
 
-    if !opts.yes && !opts.dry_run && std::io::stdin().is_terminal() && !confirm(&targets, &opts)? {
+    if !opts.yes && !opts.dry_run && std::io::stdin().is_terminal() && !confirm(&targets, opts)? {
         eprintln!("aborted");
         return Ok(0);
     }
 
     if opts.dry_run {
-        announce_dry_run(&targets, &opts)?;
+        announce_dry_run(&targets, opts)?;
         return Ok(0);
     }
 
@@ -114,9 +117,9 @@ fn execute_target(target: ResolvedTarget, force: bool) -> KillReportEntry {
 fn resolve_targets(opts: &KillOptions) -> Result<Vec<ResolvedTarget>> {
     // Note: `--port 0` is rejected at CLI-parse time so it produces a usage
     // exit code (2); callers here can rely on `port >= 1`.
-    match opts.target {
-        KillTarget::Port(port) => targets_for_port(port),
-        KillTarget::Pid(pid) => Ok(resolve_pid_target(pid).into_iter().collect()),
+    match &opts.target {
+        KillTarget::Port(filter) => targets_for_port(*filter),
+        KillTarget::Pid(pid) => Ok(resolve_pid_target(*pid).into_iter().collect()),
     }
 }
 
@@ -196,18 +199,7 @@ fn announce_dry_run(targets: &[ResolvedTarget], opts: &KillOptions) -> Result<()
     }
 
     for t in targets {
-        match t {
-            ResolvedTarget::Process(p) => {
-                writeln!(out, "  pid {} ({})", p.pid, p.process)?;
-            }
-            ResolvedTarget::Container(ct) => {
-                writeln!(
-                    out,
-                    "  container '{}' [proxy pid {} ({})]",
-                    ct.container_name, ct.proxy_pid, ct.proxy_process
-                )?;
-            }
-        }
+        write_target_line(&mut out, t)?;
     }
     Ok(())
 }
@@ -255,18 +247,7 @@ fn confirm(targets: &[ResolvedTarget], opts: &KillOptions) -> Result<bool> {
     }
 
     for t in targets {
-        match t {
-            ResolvedTarget::Process(p) => {
-                writeln!(err, "  pid {} ({})", p.pid, p.process)?;
-            }
-            ResolvedTarget::Container(ct) => {
-                writeln!(
-                    err,
-                    "  container '{}' [proxy pid {} ({})]",
-                    ct.container_name, ct.proxy_pid, ct.proxy_process
-                )?;
-            }
-        }
+        write_target_line(&mut err, t)?;
     }
     write!(err, "proceed? [y/N] ")?;
     err.flush()?;
@@ -293,6 +274,22 @@ fn count_target_kinds(targets: &[ResolvedTarget]) -> (usize, usize) {
     (n_proc, n_ctr)
 }
 
+/// Write a single indented target line to the given writer.
+fn write_target_line(writer: &mut impl Write, target: &ResolvedTarget) -> std::io::Result<()> {
+    match target {
+        ResolvedTarget::Process(p) => {
+            writeln!(writer, "  pid {} ({})", p.pid, p.process)
+        }
+        ResolvedTarget::Container(ct) => {
+            writeln!(
+                writer,
+                "  container '{}' [proxy pid {} ({})]",
+                ct.container_name, ct.proxy_pid, ct.proxy_process
+            )
+        }
+    }
+}
+
 const fn confirmation_verb(force: bool) -> &'static str {
     #[cfg(windows)]
     {
@@ -313,7 +310,7 @@ mod tests {
 
     #[test]
     fn run_returns_three_for_missing_pid() {
-        let exit_code = run(KillOptions {
+        let exit_code = run(&KillOptions {
             target: KillTarget::Pid(u32::MAX),
             force: false,
             yes: true,

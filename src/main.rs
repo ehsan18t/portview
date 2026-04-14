@@ -8,6 +8,7 @@ use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
+use portlens::filter::PortFilter;
 use portlens::{collector, display, filter};
 
 /// Exit code for runtime errors (failed to enumerate sockets, write errors).
@@ -23,7 +24,7 @@ struct Cli {
     tcp: bool,
     udp: bool,
     listen: bool,
-    port: Option<u16>,
+    port: Option<PortFilter>,
     all: bool,
     full: bool,
     compact: bool,
@@ -43,8 +44,8 @@ enum Command {
     },
     /// Terminate a process by port or PID.
     Kill {
-        /// Target port: kill TCP listeners or UDP binders on this local port.
-        port: Option<u16>,
+        /// Target port or range: kill TCP listeners or UDP binders on these local ports.
+        port: Option<PortFilter>,
         /// Target PID: kill this specific process.
         pid: Option<u32>,
         /// Escalate to forceful termination (SIGKILL on Unix).
@@ -164,10 +165,10 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
         let sub_args: Vec<OsString> = args[idx + 1..].to_vec();
 
         let mut sub_pargs = pico_args::Arguments::from_vec(sub_args);
-        let port: Option<u16> = sub_pargs
+        let port: Option<PortFilter> = sub_pargs
             .opt_value_from_str(["-p", "--port"])
-            .context("invalid value for '--port' (expected an integer in 1..=65535)")?;
-        validate_port_arg(port)?;
+            .context("invalid value for '--port' (expected a port or range like 3000-4000)")?;
+        validate_port_filter(port)?;
         let pid: Option<u32> = sub_pargs
             .opt_value_from_str("--pid")
             .context("invalid value for '--pid' (expected a non-negative integer)")?;
@@ -213,10 +214,10 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     let tcp = pargs.contains(["-t", "--tcp"]);
     let udp = pargs.contains(["-u", "--udp"]);
     let listen = pargs.contains(["-l", "--listen"]);
-    let port: Option<u16> = pargs
+    let port: Option<PortFilter> = pargs
         .opt_value_from_str(["-p", "--port"])
-        .context("invalid value for '--port' (expected an integer in 1..=65535)")?;
-    validate_port_arg(port)?;
+        .context("invalid value for '--port' (expected a port number or range like 3000-4000)")?;
+    validate_port_filter(port)?;
     let all = pargs.contains(["-a", "--all"]);
     let full = pargs.contains(["-f", "--full"]);
     let compact = pargs.contains(["-c", "--compact"]);
@@ -252,9 +253,12 @@ fn parse_cli(args: Vec<OsString>) -> Result<Cli> {
     })
 }
 
-fn validate_port_arg(port: Option<u16>) -> Result<()> {
-    if port == Some(0) {
-        bail!("invalid value for '--port' (expected an integer in 1..=65535)");
+/// Validate a [`PortFilter`] from `--port`, rejecting port 0 in either variant.
+fn validate_port_filter(port: Option<PortFilter>) -> Result<()> {
+    if let Some(filter) = port
+        && filter.contains_zero()
+    {
+        bail!("invalid value for '--port' (port numbers must be in 1..=65535)");
     }
 
     Ok(())
@@ -275,7 +279,7 @@ fn print_help() {
     println!("  -t, --tcp            Show only TCP sockets");
     println!("  -u, --udp            Show only UDP sockets");
     println!("  -l, --listen         Show only sockets in LISTEN state (TCP only)");
-    println!("  -p, --port <PORT>    Filter results to a specific port number");
+    println!("  -p, --port <PORT>    Filter results to a port or range (e.g. 3000 or 3000-4000)");
     println!("  -a, --all            Show all ports (disable developer-relevant filter)");
     println!("  -f, --full           Show all columns (adds STATE, USER)");
     println!("  -c, --compact        Use compact borderless table style");
@@ -289,7 +293,8 @@ fn print_help() {
     println!("      --check          Only check for a new version; do not install");
     println!();
     println!("Subcommand 'kill' options (exactly one of --port or --pid is required):");
-    println!("  -p, --port <PORT>    Kill TCP listeners or UDP binders on this local port");
+    println!("  -p, --port <PORT>    Kill TCP listeners or UDP binders on a local port or range");
+    println!("                       (e.g. 3000 or 3000-4000)");
     println!("                       (stops published containers via daemon API, not proxy PID)");
     println!("                       (use --pid if daemon lookup fails or is ambiguous)");
     println!("      --pid <PID>      Kill the given PID");
@@ -321,11 +326,11 @@ fn run(cli: Cli) -> Result<u8> {
                 json,
             } => {
                 let target = match (port, pid) {
-                    (Some(p), None) => portlens::kill::KillTarget::Port(p),
+                    (Some(f), None) => portlens::kill::KillTarget::Port(f),
                     (None, Some(p)) => portlens::kill::KillTarget::Pid(p),
                     _ => unreachable!("parse_cli enforces exactly one selector"),
                 };
-                portlens::kill::run(portlens::kill::KillOptions {
+                portlens::kill::run(&portlens::kill::KillOptions {
                     target,
                     force,
                     yes,
@@ -391,8 +396,64 @@ mod tests {
             .expect_err("top-level --port 0 should be rejected during parsing");
 
         assert!(
-            format!("{error:#}").contains("expected an integer in 1..=65535"),
+            format!("{error:#}").contains("port numbers must be in 1..=65535"),
             "port zero should produce the standard usage error"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_global_port_range_with_zero() {
+        let error = parse_cli(args(&["--port", "0-100"]))
+            .expect_err("top-level --port 0-100 should be rejected during parsing");
+
+        assert!(
+            format!("{error:#}").contains("port numbers must be in 1..=65535"),
+            "port range starting at zero should produce a usage error"
+        );
+    }
+
+    #[test]
+    fn parse_cli_accepts_single_port() {
+        let cli = parse_cli(args(&["--port", "8080"])).expect("single port should parse");
+        assert_eq!(
+            cli.port,
+            Some(PortFilter::Single(8080)),
+            "single port should be stored as PortFilter::Single"
+        );
+    }
+
+    #[test]
+    fn parse_cli_accepts_port_range() {
+        let cli = parse_cli(args(&["--port", "3000-4000"])).expect("port range should parse");
+        assert_eq!(
+            cli.port,
+            Some(PortFilter::Range {
+                start: 3000,
+                end: 4000
+            }),
+            "port range should be stored as PortFilter::Range"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_reversed_port_range() {
+        let error = parse_cli(args(&["--port", "5000-3000"]))
+            .expect_err("reversed range should be rejected");
+
+        assert!(
+            format!("{error:#}").contains("must not exceed"),
+            "reversed range should report start > end: {error:#}"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_non_numeric_port() {
+        let error =
+            parse_cli(args(&["--port", "abc"])).expect_err("non-numeric port should be rejected");
+
+        assert!(
+            format!("{error:#}").contains("not a valid port number"),
+            "non-numeric port should report a parsing failure: {error:#}"
         );
     }
 
@@ -402,8 +463,65 @@ mod tests {
             .expect_err("kill --port 0 should be rejected during parsing");
 
         assert!(
-            format!("{error:#}").contains("expected an integer in 1..=65535"),
+            format!("{error:#}").contains("port numbers must be in 1..=65535"),
             "kill port zero should produce the standard usage error"
+        );
+    }
+
+    #[test]
+    fn parse_cli_accepts_kill_single_port() {
+        let cli =
+            parse_cli(args(&["kill", "--port", "3000"])).expect("kill single port should parse");
+        match cli.command {
+            Some(Command::Kill { port, .. }) => {
+                assert_eq!(
+                    port,
+                    Some(PortFilter::Single(3000)),
+                    "kill --port 3000 should parse as Single"
+                );
+            }
+            _ => panic!("expected Kill command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_accepts_kill_port_range() {
+        let cli = parse_cli(args(&["kill", "--port", "3000-4000"]))
+            .expect("kill port range should parse");
+        match cli.command {
+            Some(Command::Kill { port, .. }) => {
+                assert_eq!(
+                    port,
+                    Some(PortFilter::Range {
+                        start: 3000,
+                        end: 4000
+                    }),
+                    "kill --port 3000-4000 should parse as Range"
+                );
+            }
+            _ => panic!("expected Kill command"),
+        }
+    }
+
+    #[test]
+    fn parse_cli_rejects_kill_reversed_port_range() {
+        let error = parse_cli(args(&["kill", "--port", "5000-3000"]))
+            .expect_err("kill reversed range should be rejected");
+
+        assert!(
+            format!("{error:#}").contains("must not exceed"),
+            "kill reversed range should report start > end: {error:#}"
+        );
+    }
+
+    #[test]
+    fn parse_cli_rejects_kill_port_range_with_zero() {
+        let error = parse_cli(args(&["kill", "--port", "0-100"]))
+            .expect_err("kill --port 0-100 should be rejected");
+
+        assert!(
+            format!("{error:#}").contains("port numbers must be in 1..=65535"),
+            "kill port range starting at zero should be rejected"
         );
     }
 
