@@ -9,6 +9,52 @@ use super::platform::KillOutcome;
 use super::resolve::ContainerTarget;
 use crate::docker::StopOutcome;
 
+/// Machine-friendly status token for a kill report entry.
+///
+/// Each variant serializes to a stable kebab-case string for JSON output
+/// compatibility. Using an enum instead of raw `&'static str` prevents
+/// silent typo bugs and makes failure classification exhaustive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum KillStatus {
+    /// Process was successfully signaled.
+    #[serde(rename = "killed")]
+    Killed,
+    /// Process had already exited before the signal was sent.
+    #[serde(rename = "already-exited")]
+    AlreadyExited,
+    /// OS refused the signal (insufficient privileges).
+    #[serde(rename = "permission-denied")]
+    PermissionDenied,
+    /// Signal delivery failed for an OS-specific reason.
+    #[cfg(unix)]
+    #[serde(rename = "failed")]
+    Failed,
+    /// Dry-run: process would be killed (graceful).
+    #[serde(rename = "would-kill")]
+    WouldKill,
+    /// Dry-run: process would be force-killed.
+    #[serde(rename = "would-force-kill")]
+    WouldForceKill,
+    /// Container was successfully stopped via the daemon API.
+    #[serde(rename = "container-stopped")]
+    ContainerStopped,
+    /// Container was already stopped.
+    #[serde(rename = "container-already-stopped")]
+    ContainerAlreadyStopped,
+    /// Container was not found by the daemon.
+    #[serde(rename = "container-not-found")]
+    ContainerNotFound,
+    /// Daemon could not stop the container.
+    #[serde(rename = "container-stop-failed")]
+    ContainerStopFailed,
+    /// Dry-run: container would be stopped (graceful).
+    #[serde(rename = "would-stop-container")]
+    WouldStopContainer,
+    /// Dry-run: container would be force-stopped.
+    #[serde(rename = "would-force-stop-container")]
+    WouldForceStopContainer,
+}
+
 /// One row in the kill report.
 #[derive(Debug, Clone, Serialize)]
 pub struct KillReportEntry {
@@ -17,7 +63,7 @@ pub struct KillReportEntry {
     /// Process name at resolve time.
     pub process: String,
     /// Machine-friendly status token.
-    pub status: &'static str,
+    pub status: KillStatus,
     /// Optional human hint (e.g., permission advice).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
@@ -37,13 +83,14 @@ impl KillReportEntry {
     #[must_use]
     pub fn from_outcome(pid: u32, process: String, outcome: KillOutcome) -> Self {
         let (status, hint) = match outcome {
-            KillOutcome::Signaled => ("killed", None),
-            KillOutcome::AlreadyGone => ("already-exited", None),
-            KillOutcome::PermissionDenied => {
-                ("permission-denied", Some(elevation_hint().to_owned()))
-            }
+            KillOutcome::Signaled => (KillStatus::Killed, None),
+            KillOutcome::AlreadyGone => (KillStatus::AlreadyExited, None),
+            KillOutcome::PermissionDenied => (
+                KillStatus::PermissionDenied,
+                Some(elevation_hint().to_owned()),
+            ),
             #[cfg(unix)]
-            KillOutcome::Failed => ("failed", None),
+            KillOutcome::Failed => (KillStatus::Failed, None),
         };
         Self {
             pid,
@@ -60,9 +107,9 @@ impl KillReportEntry {
     #[must_use]
     pub const fn from_dry_run(pid: u32, process: String, force: bool) -> Self {
         let status = if force {
-            "would-force-kill"
+            KillStatus::WouldForceKill
         } else {
-            "would-kill"
+            KillStatus::WouldKill
         };
 
         Self {
@@ -80,14 +127,14 @@ impl KillReportEntry {
     #[must_use]
     pub fn from_container_outcome(ct: ContainerTarget, outcome: StopOutcome) -> Self {
         let (status, hint) = match outcome {
-            StopOutcome::Stopped => ("container-stopped", None),
-            StopOutcome::AlreadyStopped => ("container-already-stopped", None),
+            StopOutcome::Stopped => (KillStatus::ContainerStopped, None),
+            StopOutcome::AlreadyStopped => (KillStatus::ContainerAlreadyStopped, None),
             StopOutcome::NotFound => (
-                "container-not-found",
+                KillStatus::ContainerNotFound,
                 Some("the container may have been removed".to_owned()),
             ),
             StopOutcome::Failed => (
-                "container-stop-failed",
+                KillStatus::ContainerStopFailed,
                 Some("could not reach the container runtime daemon".to_owned()),
             ),
         };
@@ -106,9 +153,9 @@ impl KillReportEntry {
     #[must_use]
     pub fn from_container_dry_run(ct: &ContainerTarget, force: bool) -> Self {
         let status = if force {
-            "would-force-stop-container"
+            KillStatus::WouldForceStopContainer
         } else {
-            "would-stop-container"
+            KillStatus::WouldStopContainer
         };
         Self {
             pid: ct.proxy_pid,
@@ -122,11 +169,27 @@ impl KillReportEntry {
     }
 
     /// Returns `true` when this entry represents a failure.
+    #[cfg(unix)]
     #[must_use]
-    pub fn is_failure(&self) -> bool {
+    pub const fn is_failure(&self) -> bool {
         matches!(
             self.status,
-            "permission-denied" | "failed" | "container-stop-failed" | "container-not-found"
+            KillStatus::PermissionDenied
+                | KillStatus::Failed
+                | KillStatus::ContainerStopFailed
+                | KillStatus::ContainerNotFound
+        )
+    }
+
+    /// Returns `true` when this entry represents a failure.
+    #[cfg(not(unix))]
+    #[must_use]
+    pub const fn is_failure(&self) -> bool {
+        matches!(
+            self.status,
+            KillStatus::PermissionDenied
+                | KillStatus::ContainerStopFailed
+                | KillStatus::ContainerNotFound
         )
     }
 }
@@ -156,31 +219,31 @@ pub fn print_human(entries: &[KillReportEntry]) -> Result<()> {
 
 fn format_process_line(e: &KillReportEntry) -> String {
     match e.status {
-        "killed" => format!("killed pid {} ({})", e.pid, e.process),
-        "already-exited" => format!("pid {} already exited ({})", e.pid, e.process),
-        "permission-denied" => format!(
+        KillStatus::Killed => format!("killed pid {} ({})", e.pid, e.process),
+        KillStatus::AlreadyExited => format!("pid {} already exited ({})", e.pid, e.process),
+        KillStatus::PermissionDenied => format!(
             "permission denied killing pid {} ({}); {}",
             e.pid,
             e.process,
             e.hint.as_deref().unwrap_or("")
         ),
-        other => format!("pid {} ({}): {}", e.pid, e.process, other),
+        _ => format!("pid {} ({}): {:?}", e.pid, e.process, e.status),
     }
 }
 
 fn format_container_line(e: &KillReportEntry, name: &str) -> String {
     let id = e.container_id.as_deref().unwrap_or("?");
     match e.status {
-        "container-stopped" => format!("stopped container '{name}' ({id})"),
-        "container-already-stopped" => {
+        KillStatus::ContainerStopped => format!("stopped container '{name}' ({id})"),
+        KillStatus::ContainerAlreadyStopped => {
             format!("container '{name}' ({id}) was already stopped")
         }
-        "container-not-found" => format!("container '{name}' ({id}) not found"),
-        "container-stop-failed" => format!(
+        KillStatus::ContainerNotFound => format!("container '{name}' ({id}) not found"),
+        KillStatus::ContainerStopFailed => format!(
             "failed to stop container '{name}' ({id}); {}",
             e.hint.as_deref().unwrap_or("")
         ),
-        other => format!("container '{name}' ({id}): {other}"),
+        _ => format!("container '{name}' ({id}): {:?}", e.status),
     }
 }
 
@@ -202,7 +265,7 @@ mod tests {
 
         assert_eq!(entry.pid, 1234);
         assert_eq!(entry.process, "node");
-        assert_eq!(entry.status, "would-kill");
+        assert_eq!(entry.status, KillStatus::WouldKill);
         assert!(
             entry.hint.is_none(),
             "dry-run entries should not add a hint"
@@ -213,7 +276,7 @@ mod tests {
     fn forceful_dry_run_report_marks_forceful_status() {
         let entry = KillReportEntry::from_dry_run(1234, "node".to_string(), true);
 
-        assert_eq!(entry.status, "would-force-kill");
+        assert_eq!(entry.status, KillStatus::WouldForceKill);
     }
 
     #[test]
@@ -226,7 +289,7 @@ mod tests {
             proxy_process: "docker-proxy".to_string(),
         };
         let entry = KillReportEntry::from_container_outcome(ct, StopOutcome::Stopped);
-        assert_eq!(entry.status, "container-stopped");
+        assert_eq!(entry.status, KillStatus::ContainerStopped);
         assert_eq!(entry.container_name.as_deref(), Some("postgres"));
         assert_eq!(
             entry.container_id.as_deref(),
@@ -246,7 +309,7 @@ mod tests {
             proxy_process: "docker-proxy".to_string(),
         };
         let entry = KillReportEntry::from_container_outcome(ct, StopOutcome::AlreadyStopped);
-        assert_eq!(entry.status, "container-already-stopped");
+        assert_eq!(entry.status, KillStatus::ContainerAlreadyStopped);
         assert!(!entry.is_failure());
     }
 
@@ -260,7 +323,7 @@ mod tests {
             proxy_process: "docker-proxy".to_string(),
         };
         let entry = KillReportEntry::from_container_outcome(ct, StopOutcome::Failed);
-        assert_eq!(entry.status, "container-stop-failed");
+        assert_eq!(entry.status, KillStatus::ContainerStopFailed);
         assert!(
             entry.is_failure(),
             "failed container stop should be a failure"
@@ -277,10 +340,10 @@ mod tests {
             proxy_process: "docker-proxy".to_string(),
         };
         let entry = KillReportEntry::from_container_dry_run(&ct, false);
-        assert_eq!(entry.status, "would-stop-container");
+        assert_eq!(entry.status, KillStatus::WouldStopContainer);
         assert_eq!(entry.container_name.as_deref(), Some("nginx"));
 
         let entry_force = KillReportEntry::from_container_dry_run(&ct, true);
-        assert_eq!(entry_force.status, "would-force-stop-container");
+        assert_eq!(entry_force.status, KillStatus::WouldForceStopContainer);
     }
 }

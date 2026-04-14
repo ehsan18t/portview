@@ -322,6 +322,7 @@ const fn confirmation_verb(force: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use self::resolve::{ContainerTarget, Target};
+    use super::report::KillStatus;
     use super::*;
 
     #[test]
@@ -351,7 +352,7 @@ mod tests {
         let report = dry_run_report(&targets, false);
 
         assert_eq!(report.len(), 1, "dry-run reports should keep every target");
-        assert_eq!(report[0].status, "would-kill");
+        assert_eq!(report[0].status, KillStatus::WouldKill);
     }
 
     #[test]
@@ -363,7 +364,7 @@ mod tests {
 
         let report = dry_run_report(&targets, true);
 
-        assert_eq!(report[0].status, "would-force-kill");
+        assert_eq!(report[0].status, KillStatus::WouldForceKill);
     }
 
     #[test]
@@ -377,7 +378,7 @@ mod tests {
         })];
 
         let report = dry_run_report(&targets, false);
-        assert_eq!(report[0].status, "would-stop-container");
+        assert_eq!(report[0].status, KillStatus::WouldStopContainer);
         assert_eq!(
             report[0].container_name.as_deref(),
             Some("postgres"),
@@ -385,7 +386,7 @@ mod tests {
         );
 
         let report_force = dry_run_report(&targets, true);
-        assert_eq!(report_force[0].status, "would-force-stop-container");
+        assert_eq!(report_force[0].status, KillStatus::WouldForceStopContainer);
     }
 
     #[test]
