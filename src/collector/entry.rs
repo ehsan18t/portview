@@ -11,7 +11,7 @@ use std::sync::Arc;
 use sysinfo::{ProcessRefreshKind, UpdateKind};
 
 use crate::framework;
-use crate::types::{PortEntry, Protocol, State};
+use crate::types::{AppLabel, PortEntry, Protocol, State};
 
 use super::CollectContext;
 use super::resolve;
@@ -86,11 +86,15 @@ pub(super) fn build_entry(l: &listeners::Listener, context: &mut CollectContext<
     };
 
     let app = if context.deep_enrichment {
-        framework::detect(container.as_ref(), project_root.as_deref(), &l.process.name)
-            .or_else(|| exe_name.and_then(framework::detect_from_process))
+        detect_enriched_app(
+            container.as_ref(),
+            project_root.as_deref(),
+            &l.process.name,
+            exe_name,
+            exe_path,
+        )
     } else {
-        framework::detect_from_process(&l.process.name)
-            .or_else(|| exe_name.and_then(framework::detect_from_process))
+        detect_process_app(&l.process.name, exe_name)
     };
 
     let uptime_secs = sysinfo_process
@@ -117,6 +121,48 @@ fn process_executable_name(exe_path: Option<&Path>) -> Option<&str> {
         .and_then(Path::file_name)
         .and_then(std::ffi::OsStr::to_str)
         .filter(|name| !name.is_empty())
+}
+
+fn detect_enriched_app(
+    container: Option<&crate::docker::ContainerInfo>,
+    project_root: Option<&Path>,
+    process_name: &str,
+    exe_name: Option<&str>,
+    exe_path: Option<&Path>,
+) -> Option<AppLabel> {
+    if let Some(info) = container
+        && let Some(label) = framework::detect_from_image(info)
+    {
+        return Some(label);
+    }
+
+    let process_app = detect_process_app(process_name, exe_name);
+
+    if let Some(root) = project_root
+        && config_detection_allowed(process_app.as_deref(), exe_path, root)
+        && let Some(label) = framework::detect_from_config(root)
+    {
+        return Some(label);
+    }
+
+    process_app
+}
+
+fn detect_process_app(process_name: &str, exe_name: Option<&str>) -> Option<AppLabel> {
+    framework::detect_from_process(process_name)
+        .or_else(|| exe_name.and_then(framework::detect_from_process))
+}
+
+fn config_detection_allowed(
+    process_app: Option<&str>,
+    exe_path: Option<&Path>,
+    project_root: &Path,
+) -> bool {
+    process_app.is_some() || executable_belongs_to_project(exe_path, project_root)
+}
+
+fn executable_belongs_to_project(exe_path: Option<&Path>, project_root: &Path) -> bool {
+    exe_path.is_some_and(|path| path.starts_with(project_root))
 }
 
 fn resolve_state(
@@ -158,7 +204,10 @@ pub(super) fn process_refresh_kind(deep_enrichment: bool) -> ProcessRefreshKind 
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use tempfile::TempDir;
 
     use super::*;
 
@@ -199,6 +248,64 @@ mod tests {
             resolve_state(listener.protocol, listener.socket, &tcp_states),
             State::Unknown,
             "missing TCP state data should stay UNKNOWN instead of guessing LISTEN"
+        );
+    }
+
+    #[test]
+    fn detect_enriched_app_uses_config_for_known_runtime_processes() {
+        let project = TempDir::new().unwrap();
+        fs::write(project.path().join("next.config.js"), "").unwrap();
+
+        let app = detect_enriched_app(None, Some(project.path()), "node", None, None);
+
+        assert_eq!(app.as_deref(), Some("Next.js"));
+    }
+
+    #[test]
+    fn detect_enriched_app_uses_config_for_project_owned_binaries() {
+        let project = TempDir::new().unwrap();
+        let exe_path = project
+            .path()
+            .join("target")
+            .join("debug")
+            .join("service.exe");
+
+        fs::create_dir_all(exe_path.parent().unwrap()).unwrap();
+        fs::write(project.path().join("Cargo.toml"), "").unwrap();
+        fs::write(&exe_path, "").unwrap();
+
+        let app = detect_enriched_app(
+            None,
+            Some(project.path()),
+            "service.exe",
+            Some("service.exe"),
+            Some(exe_path.as_path()),
+        );
+
+        assert_eq!(app.as_deref(), Some("Rust"));
+    }
+
+    #[test]
+    fn detect_enriched_app_skips_config_for_unknown_shell_processes() {
+        let project = TempDir::new().unwrap();
+        let external = TempDir::new().unwrap();
+        let exe_path = external.path().join("pwsh.exe");
+
+        fs::write(project.path().join("Cargo.toml"), "").unwrap();
+        fs::write(&exe_path, "").unwrap();
+
+        let app = detect_enriched_app(
+            None,
+            Some(project.path()),
+            "pwsh.exe",
+            Some("pwsh.exe"),
+            Some(exe_path.as_path()),
+        );
+
+        assert_eq!(
+            app.as_deref(),
+            None,
+            "shell processes outside the project should not inherit the project's framework label"
         );
     }
 

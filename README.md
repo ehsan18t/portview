@@ -234,7 +234,7 @@ based on available width.
 
 **App/framework detection:** Identifies the technology behind a port using three strategies (in priority order):
 1. Docker/Podman image name (e.g. `postgres:16` -> PostgreSQL)
-2. Config files in the project root (e.g. `next.config.mjs` -> Next.js)
+2. Config files in the project root when the listener is a known runtime or a project-owned executable (e.g. `next.config.mjs` -> Next.js)
 3. Process executable name (e.g. `nginx` -> Nginx)
 
 **Low-overhead mode:** `--no-enrich` disables Docker/Podman probing, project-root walking, config-file scanning, and command-line path fallback. Core socket data, users, uptime, and process-name detection still remain available. Combine it with `--all` for the rawest view.
