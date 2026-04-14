@@ -58,6 +58,30 @@ pub struct ContainerInfo {
 /// Maps `(host_ip, host_port, protocol)` to container info.
 pub type ContainerPortMap = HashMap<(Option<IpAddr>, u16, Protocol), ContainerInfo>;
 
+#[cfg(test)]
+/// Build a reusable container fixture for test maps.
+pub(crate) fn test_container_info(id: &str, name: &str, image: &str) -> ContainerInfo {
+    ContainerInfo {
+        id: id.to_string(),
+        name: name.to_string(),
+        image: image.to_string(),
+    }
+}
+
+#[cfg(test)]
+/// Insert a reusable container fixture into a test port map.
+pub(crate) fn insert_test_container(
+    map: &mut ContainerPortMap,
+    host_ip: Option<IpAddr>,
+    port: u16,
+    proto: Protocol,
+    id: &str,
+    name: &str,
+    image: &str,
+) {
+    map.insert((host_ip, port, proto), test_container_info(id, name, image));
+}
+
 /// Result of matching a socket against published container port bindings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PublishedContainerMatch<'a> {
@@ -394,21 +418,23 @@ mod tests {
     #[test]
     fn lookup_published_container_keeps_protocol_bindings_separate() {
         let mut map = ContainerPortMap::new();
-        map.insert(
-            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 53, Protocol::Tcp),
-            ContainerInfo {
-                id: "tcp53".to_string(),
-                name: "dns-tcp".to_string(),
-                image: "bind9".to_string(),
-            },
+        insert_test_container(
+            &mut map,
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            53,
+            Protocol::Tcp,
+            "tcp53",
+            "dns-tcp",
+            "bind9",
         );
-        map.insert(
-            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 53, Protocol::Udp),
-            ContainerInfo {
-                id: "udp53".to_string(),
-                name: "dns-udp".to_string(),
-                image: "bind9".to_string(),
-            },
+        insert_test_container(
+            &mut map,
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            53,
+            Protocol::Udp,
+            "udp53",
+            "dns-udp",
+            "bind9",
         );
 
         let tcp = lookup_published_container(
@@ -437,25 +463,23 @@ mod tests {
     #[test]
     fn lookup_published_container_marks_ambiguous_proxy_matches() {
         let mut map = ContainerPortMap::new();
-        map.insert(
-            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
-            ContainerInfo {
-                id: "api-a".to_string(),
-                name: "api-a".to_string(),
-                image: "node:22".to_string(),
-            },
+        insert_test_container(
+            &mut map,
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            8080,
+            Protocol::Tcp,
+            "api-a",
+            "api-a",
+            "node:22",
         );
-        map.insert(
-            (
-                Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
-                8080,
-                Protocol::Tcp,
-            ),
-            ContainerInfo {
-                id: "api-b".to_string(),
-                name: "api-b".to_string(),
-                image: "node:22".to_string(),
-            },
+        insert_test_container(
+            &mut map,
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+            8080,
+            Protocol::Tcp,
+            "api-b",
+            "api-b",
+            "node:22",
         );
 
         let result = lookup_published_container(

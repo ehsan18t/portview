@@ -97,35 +97,17 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
         None
     };
 
-    let raw_listeners = listeners::get_all()
-        .map_err(|e| anyhow::anyhow!("failed to enumerate open sockets from the OS: {e}"))?;
+    let raw_listeners = collect_raw_listeners()?;
 
     let mut sys = System::new();
-
-    let mut tracked_pids: Vec<_> = raw_listeners
-        .iter()
-        .map(|listener| sysinfo::Pid::from_u32(listener.process.pid))
-        .collect();
-    tracked_pids.sort_unstable();
-    tracked_pids.dedup();
+    let tracked_pids = tracked_process_ids(&raw_listeners);
     debug!(
         "enumerated raw listeners: deep_enrichment={} listeners={} tracked_pids={}",
         options.deep_enrichment,
         raw_listeners.len(),
         tracked_pids.len()
     );
-
-    // `false` = do not remove previously-tracked dead processes. On a
-    // freshly created System the internal map is empty, so this flag
-    // has no effect either way. Passing `false` avoids the slightly
-    // more expensive "clean up stale entries" pass.
-    if !tracked_pids.is_empty() {
-        sys.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&tracked_pids),
-            false,
-            entry::process_refresh_kind(options.deep_enrichment),
-        );
-    }
+    refresh_tracked_processes(&mut sys, &tracked_pids, options.deep_enrichment);
 
     let mut user_resolver = UserResolver::default();
 
@@ -133,11 +115,7 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
     let container_map =
         docker_handle.map_or_else(ContainerPortMap::default, docker::await_detection);
     let tcp_states = tcp_state::load_tcp_state_index();
-
-    let now_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now_epoch = current_epoch_secs();
 
     let mut project_cache: HashMap<PathBuf, Option<PathBuf>> =
         HashMap::with_capacity(raw_listeners.len());
@@ -173,7 +151,56 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
         .map(|l| entry::build_entry(&l, &mut context))
         .collect();
 
-    let mut entries = dedup::deduplicate(all_entries);
+    let entries = deduplicate_and_sort_entries(all_entries);
+    debug!("finished socket collection: entries={}", entries.len());
+    Ok(entries)
+}
+
+fn collect_raw_listeners() -> Result<Vec<listeners::Listener>> {
+    listeners::get_all()
+        .map(|listeners| listeners.into_iter().collect())
+        .map_err(|error| anyhow::anyhow!("failed to enumerate open sockets from the OS: {error}"))
+}
+
+fn tracked_process_ids(raw_listeners: &[listeners::Listener]) -> Vec<sysinfo::Pid> {
+    let mut tracked_pids: Vec<_> = raw_listeners
+        .iter()
+        .map(|listener| sysinfo::Pid::from_u32(listener.process.pid))
+        .collect();
+    tracked_pids.sort_unstable();
+    tracked_pids.dedup();
+    tracked_pids
+}
+
+fn refresh_tracked_processes(
+    sys: &mut System,
+    tracked_pids: &[sysinfo::Pid],
+    deep_enrichment: bool,
+) {
+    // `false` = do not remove previously-tracked dead processes. On a
+    // freshly created System the internal map is empty, so this flag
+    // has no effect either way. Passing `false` avoids the slightly
+    // more expensive "clean up stale entries" pass.
+    if tracked_pids.is_empty() {
+        return;
+    }
+
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(tracked_pids),
+        false,
+        entry::process_refresh_kind(deep_enrichment),
+    );
+}
+
+fn current_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn deduplicate_and_sort_entries(entries: Vec<PortEntry>) -> Vec<PortEntry> {
+    let mut entries = dedup::deduplicate(entries);
     entries.sort_by(|left, right| {
         (
             left.port,
@@ -190,8 +217,7 @@ pub fn collect_with_options(options: &CollectOptions) -> Result<Vec<PortEntry>> 
                 &*right.process,
             ))
     });
-    debug!("finished socket collection: entries={}", entries.len());
-    Ok(entries)
+    entries
 }
 
 /// Return a best-effort warning when the current process lacks full visibility.

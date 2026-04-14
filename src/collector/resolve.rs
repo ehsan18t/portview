@@ -163,11 +163,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_container(name: &str, image: &str) -> docker::ContainerInfo {
-        docker::ContainerInfo {
-            id: String::new(),
-            name: name.to_string(),
-            image: image.to_string(),
-        }
+        docker::test_container_info("", name, image)
     }
 
     fn insert_container(
@@ -177,10 +173,7 @@ mod tests {
         name: &str,
         image: &str,
     ) {
-        map.insert(
-            (Some(address), port, Protocol::Tcp),
-            make_container(name, image),
-        );
+        docker::insert_test_container(map, Some(address), port, Protocol::Tcp, "", name, image);
     }
 
     fn assert_container_name(container: Option<&docker::ContainerInfo>, expected_name: &str) {
@@ -312,25 +305,23 @@ mod tests {
     #[test]
     fn container_lookup_refuses_ambiguous_proxy_matches() {
         let mut map = HashMap::new();
-        map.insert(
-            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
-            docker::ContainerInfo {
-                id: String::new(),
-                name: "api-a".to_string(),
-                image: "node:22".to_string(),
-            },
+        docker::insert_test_container(
+            &mut map,
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            8080,
+            Protocol::Tcp,
+            "",
+            "api-a",
+            "node:22",
         );
-        map.insert(
-            (
-                Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
-                8080,
-                Protocol::Tcp,
-            ),
-            docker::ContainerInfo {
-                id: String::new(),
-                name: "api-b".to_string(),
-                image: "node:22".to_string(),
-            },
+        docker::insert_test_container(
+            &mut map,
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+            8080,
+            Protocol::Tcp,
+            "",
+            "api-b",
+            "node:22",
         );
 
         let container = lookup_container(

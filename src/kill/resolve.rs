@@ -309,25 +309,23 @@ mod tests {
         let mut entry = make_entry(8080, Protocol::Tcp, State::Listen, "docker-proxy");
         entry.local_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
         let mut map = ContainerPortMap::new();
-        map.insert(
-            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
-            docker::ContainerInfo {
-                id: "api-a".to_string(),
-                name: "api-a".to_string(),
-                image: "node:22".to_string(),
-            },
+        docker::insert_test_container(
+            &mut map,
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            8080,
+            Protocol::Tcp,
+            "api-a",
+            "api-a",
+            "node:22",
         );
-        map.insert(
-            (
-                Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
-                8080,
-                Protocol::Tcp,
-            ),
-            docker::ContainerInfo {
-                id: "api-b".to_string(),
-                name: "api-b".to_string(),
-                image: "node:22".to_string(),
-            },
+        docker::insert_test_container(
+            &mut map,
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+            8080,
+            Protocol::Tcp,
+            "api-b",
+            "api-b",
+            "node:22",
         );
 
         let error = container_target_for_entry(
@@ -365,21 +363,23 @@ mod tests {
         second.local_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
         let mut map = ContainerPortMap::new();
-        map.insert(
-            (None, 3000, Protocol::Tcp),
-            docker::ContainerInfo {
-                id: "container-a".to_string(),
-                name: "api-a".to_string(),
-                image: "node:22".to_string(),
-            },
+        docker::insert_test_container(
+            &mut map,
+            None,
+            3000,
+            Protocol::Tcp,
+            "container-a",
+            "api-a",
+            "node:22",
         );
-        map.insert(
-            (None, 4000, Protocol::Tcp),
-            docker::ContainerInfo {
-                id: "container-b".to_string(),
-                name: "api-b".to_string(),
-                image: "node:22".to_string(),
-            },
+        docker::insert_test_container(
+            &mut map,
+            None,
+            4000,
+            Protocol::Tcp,
+            "container-b",
+            "api-b",
+            "node:22",
         );
 
         let targets = resolve_targets_from_entries(
