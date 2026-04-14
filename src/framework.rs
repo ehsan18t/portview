@@ -202,6 +202,27 @@ const DJANGO_SOURCE_PATTERNS: &[&str] = &[
     "get_wsgi_application",
     "get_asgi_application",
 ];
+type PythonSourcePattern = (&'static str, &'static [&'static str], &'static str);
+
+const PYTHON_SOURCE_PATTERNS: &[PythonSourcePattern] = &[
+    (
+        "FastAPI",
+        &["from fastapi import", "import fastapi"],
+        "fastapi(",
+    ),
+    (
+        "Starlette",
+        &["from starlette.applications import", "import starlette"],
+        "starlette(",
+    ),
+    (
+        "Litestar",
+        &["from litestar import", "import litestar"],
+        "litestar(",
+    ),
+    ("Flask", &["from flask import", "import flask"], "flask("),
+];
+
 const PYTHON_DEPENDENCY_PATTERNS: &[(&str, &str)] = &[
     ("django", "Django"),
     ("flask", "Flask"),
@@ -279,14 +300,20 @@ fn detect_python_framework_from_dependencies(
         };
 
         let normalized = contents.to_ascii_lowercase();
-        for (package, label) in PYTHON_DEPENDENCY_PATTERNS {
-            if contains_dependency_token(&normalized, package) {
-                return Some(Cow::Borrowed(label));
-            }
+        if let Some(label) = detect_python_framework_from_dependency_text(&normalized) {
+            return Some(Cow::Borrowed(label));
         }
     }
 
     None
+}
+
+fn detect_python_framework_from_dependency_text(normalized: &str) -> Option<&'static str> {
+    PYTHON_DEPENDENCY_PATTERNS
+        .iter()
+        .find_map(|(package, label)| {
+            contains_dependency_token(normalized, package).then_some(*label)
+        })
 }
 
 fn detect_python_framework_from_source(source: &str) -> Option<&'static str> {
@@ -296,36 +323,11 @@ fn detect_python_framework_from_source(source: &str) -> Option<&'static str> {
         return Some("Django");
     }
 
-    if source_mentions_framework(
-        &normalized,
-        &["from fastapi import", "import fastapi"],
-        "fastapi(",
-    ) {
-        return Some("FastAPI");
-    }
-    if source_mentions_framework(
-        &normalized,
-        &["from starlette.applications import", "import starlette"],
-        "starlette(",
-    ) {
-        return Some("Starlette");
-    }
-    if source_mentions_framework(
-        &normalized,
-        &["from litestar import", "import litestar"],
-        "litestar(",
-    ) {
-        return Some("Litestar");
-    }
-    if source_mentions_framework(
-        &normalized,
-        &["from flask import", "import flask"],
-        "flask(",
-    ) {
-        return Some("Flask");
-    }
-
-    None
+    PYTHON_SOURCE_PATTERNS
+        .iter()
+        .find_map(|(label, imports, constructor)| {
+            source_mentions_framework(&normalized, imports, constructor).then_some(*label)
+        })
 }
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
@@ -704,6 +706,30 @@ mod tests {
         .unwrap();
 
         assert_eq!(detect_from_config(dir.path()).as_deref(), Some("FastAPI"));
+    }
+
+    #[test]
+    fn config_main_py_starlette_detects_starlette() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("main.py"),
+            "from starlette.applications import Starlette\napp = Starlette()\n",
+        )
+        .unwrap();
+
+        assert_eq!(detect_from_config(dir.path()).as_deref(), Some("Starlette"));
+    }
+
+    #[test]
+    fn config_main_py_litestar_detects_litestar() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("main.py"),
+            "from litestar import Litestar\napp = Litestar()\n",
+        )
+        .unwrap();
+
+        assert_eq!(detect_from_config(dir.path()).as_deref(), Some("Litestar"));
     }
 
     #[test]
