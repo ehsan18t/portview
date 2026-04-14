@@ -76,21 +76,7 @@ pub(super) fn unix_socket_paths(uid: u32, home: Option<std::path::PathBuf>) -> V
 
 #[cfg(unix)]
 pub(super) fn fetch_unix_socket_json(path: &std::path::Path) -> Option<String> {
-    use std::os::unix::net::UnixStream;
-
-    let mut stream = match UnixStream::connect(path) {
-        Ok(stream) => stream,
-        Err(error) => {
-            debug!(
-                "failed to connect to container runtime socket: socket={} error={error}",
-                path.display()
-            );
-            return None;
-        }
-    };
-    // Best-effort timeout; proceed even if it cannot be set.
-    drop(stream.set_read_timeout(Some(DAEMON_TIMEOUT)));
-    drop(stream.set_write_timeout(Some(DAEMON_TIMEOUT)));
+    let mut stream = connect_unix_stream(path, DAEMON_TIMEOUT, "")?;
     let response = http::send_http_request(&mut stream);
     if response.is_none() {
         debug!(
@@ -164,6 +150,31 @@ fn join_worker_threads(handles: Vec<std::thread::JoinHandle<()>>) {
     }
 }
 
+#[cfg(unix)]
+fn connect_unix_stream(
+    path: &std::path::Path,
+    timeout: std::time::Duration,
+    operation_suffix: &str,
+) -> Option<std::os::unix::net::UnixStream> {
+    use std::os::unix::net::UnixStream;
+
+    let stream = match UnixStream::connect(path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            debug!(
+                "failed to connect to container runtime socket{operation_suffix}: socket={} error={error}",
+                path.display()
+            );
+            return None;
+        }
+    };
+
+    // Best-effort timeouts; proceed even if either call fails.
+    drop(stream.set_read_timeout(Some(timeout)));
+    drop(stream.set_write_timeout(Some(timeout)));
+    Some(stream)
+}
+
 // ---------------------------------------------------------------------------
 // Windows named pipe transport
 // ---------------------------------------------------------------------------
@@ -199,23 +210,8 @@ unsafe extern "system" {
 
 #[cfg(windows)]
 pub(super) fn fetch_named_pipe_json(path: &str, deadline: std::time::Instant) -> Option<String> {
-    use std::fs::OpenOptions;
-
-    loop {
-        let mut stream = match OpenOptions::new().read(true).write(true).open(path) {
-            Ok(stream) => stream,
-            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
-                wait_named_pipe(path, deadline)?;
-                continue;
-            }
-            Err(error) => {
-                debug!("failed to open container runtime named pipe: pipe={path} error={error}");
-                return None;
-            }
-        };
-
-        return send_http_request_windows(&mut stream, deadline);
-    }
+    let mut stream = open_named_pipe(path, deadline, "")?;
+    send_http_request_windows(&mut stream, deadline)
 }
 
 #[cfg(windows)]
@@ -223,7 +219,7 @@ fn send_http_request_windows(
     stream: &mut std::fs::File,
     deadline: std::time::Instant,
 ) -> Option<String> {
-    use std::io::{Read as _, Write as _};
+    use std::io::Write as _;
 
     stream.write_all(http::CONTAINERS_HTTP_REQUEST).ok()?;
 
@@ -268,16 +264,67 @@ fn send_http_request_windows(
             continue;
         }
 
-        let max_chunk = u32::try_from(chunk.len()).ok()?;
-        let read_len = usize::try_from(available.min(max_chunk)).ok()?;
-        match stream.read(&mut chunk[..read_len]) {
-            Ok(0) => return http::extract_body_at_eof(&response, headers.as_ref()),
-            Ok(read) => response.extend_from_slice(&chunk[..read]),
-            Err(error) if error.raw_os_error() == Some(ERROR_BROKEN_PIPE) => {
-                return http::extract_body_at_eof(&response, headers.as_ref());
-            }
-            Err(_) => return None,
+        match read_named_pipe_bytes(stream, available, &mut chunk, &mut response) {
+            PipeReadResult::Continue => {}
+            PipeReadResult::Eof => return http::extract_body_at_eof(&response, headers.as_ref()),
+            PipeReadResult::Failed => return None,
         }
+    }
+}
+
+#[cfg(windows)]
+fn open_named_pipe(
+    path: &str,
+    deadline: std::time::Instant,
+    operation_suffix: &str,
+) -> Option<std::fs::File> {
+    use std::fs::OpenOptions;
+
+    loop {
+        match OpenOptions::new().read(true).write(true).open(path) {
+            Ok(stream) => return Some(stream),
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                wait_named_pipe(path, deadline)?;
+            }
+            Err(error) => {
+                debug!(
+                    "failed to open container runtime named pipe{operation_suffix}: pipe={path} error={error}"
+                );
+                return None;
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+enum PipeReadResult {
+    Continue,
+    Eof,
+    Failed,
+}
+
+#[cfg(windows)]
+fn read_named_pipe_bytes(
+    stream: &mut std::fs::File,
+    available: u32,
+    chunk: &mut [u8],
+    response: &mut Vec<u8>,
+) -> PipeReadResult {
+    let Ok(max_chunk) = u32::try_from(chunk.len()) else {
+        return PipeReadResult::Failed;
+    };
+    let Ok(read_len) = usize::try_from(available.min(max_chunk)) else {
+        return PipeReadResult::Failed;
+    };
+
+    match std::io::Read::read(stream, &mut chunk[..read_len]) {
+        Ok(0) => PipeReadResult::Eof,
+        Ok(read) => {
+            response.extend_from_slice(&chunk[..read]);
+            PipeReadResult::Continue
+        }
+        Err(error) if error.raw_os_error() == Some(ERROR_BROKEN_PIPE) => PipeReadResult::Eof,
+        Err(_) => PipeReadResult::Failed,
     }
 }
 
@@ -380,48 +427,16 @@ pub(super) const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// Send a POST request to stop or kill a container via a Unix socket.
 #[cfg(unix)]
 pub(super) fn stop_via_unix_socket(path: &std::path::Path, endpoint: &str) -> Option<u16> {
-    use std::os::unix::net::UnixStream;
-
-    let mut stream = match UnixStream::connect(path) {
-        Ok(stream) => stream,
-        Err(error) => {
-            debug!(
-                "failed to connect to container runtime socket for stop: socket={} error={error}",
-                path.display()
-            );
-            return None;
-        }
-    };
-    drop(stream.set_read_timeout(Some(STOP_TIMEOUT)));
-    drop(stream.set_write_timeout(Some(STOP_TIMEOUT)));
+    let mut stream = connect_unix_stream(path, STOP_TIMEOUT, " for stop")?;
     http::send_http_post_status(&mut stream, endpoint)
 }
 
 /// Send a POST request to stop or kill a container via a Windows named pipe.
 #[cfg(windows)]
 pub(super) fn stop_via_named_pipe(path: &str, endpoint: &str) -> Option<u16> {
-    use std::fs::OpenOptions;
-
     let deadline = std::time::Instant::now() + STOP_TIMEOUT;
-
-    loop {
-        let mut stream = match OpenOptions::new().read(true).write(true).open(path) {
-            Ok(stream) => stream,
-            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
-                wait_named_pipe(path, deadline)?;
-                continue;
-            }
-            Err(error) => {
-                debug!(
-                    "failed to open container runtime named pipe for stop: \
-                     pipe={path} error={error}"
-                );
-                return None;
-            }
-        };
-
-        return send_http_post_status_windows(&mut stream, endpoint, deadline);
-    }
+    let mut stream = open_named_pipe(path, deadline, " for stop")?;
+    send_http_post_status_windows(&mut stream, endpoint, deadline)
 }
 
 /// Windows named-pipe polled-IO loop for POST requests that return only a
@@ -432,7 +447,7 @@ fn send_http_post_status_windows(
     endpoint: &str,
     deadline: std::time::Instant,
 ) -> Option<u16> {
-    use std::io::{Read as _, Write as _};
+    use std::io::Write as _;
 
     stream
         .write_all(&http::format_post_request(endpoint))
@@ -462,17 +477,12 @@ fn send_http_post_status_windows(
             continue;
         }
 
-        let max_chunk = u32::try_from(chunk.len()).ok()?;
-        let read_len = usize::try_from(available.min(max_chunk)).ok()?;
-        match stream.read(&mut chunk[..read_len]) {
-            Ok(0) => {
+        match read_named_pipe_bytes(stream, available, &mut chunk, &mut response) {
+            PipeReadResult::Continue => {}
+            PipeReadResult::Eof => {
                 return http::parse_response_headers(&response).map(|hdr| hdr.status_code);
             }
-            Ok(read) => response.extend_from_slice(&chunk[..read]),
-            Err(error) if error.raw_os_error() == Some(ERROR_BROKEN_PIPE) => {
-                return http::parse_response_headers(&response).map(|hdr| hdr.status_code);
-            }
-            Err(_) => return None,
+            PipeReadResult::Failed => return None,
         }
     }
 }
