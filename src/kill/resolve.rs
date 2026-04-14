@@ -15,6 +15,7 @@ use log::debug;
 
 use crate::collector::{self, CollectOptions};
 use crate::docker::{self, ContainerPortMap, PublishedContainerMatch};
+use crate::filter::PortFilter;
 use crate::types::{PortEntry, Protocol, State};
 
 /// A PID/process-name pair for one target of a kill request.
@@ -56,7 +57,7 @@ pub enum ResolvedTarget {
 /// the matching entry is a known Docker proxy/helper and the daemon reports a
 /// container for that port, the resolver yields a [`ContainerTarget`].
 /// Otherwise it produces a regular process [`Target`].
-pub fn targets_for_port(port: u16) -> Result<Vec<ResolvedTarget>> {
+pub fn targets_for_port(filter: PortFilter) -> Result<Vec<ResolvedTarget>> {
     // Start Docker detection early so it overlaps with socket enumeration.
     let docker_handle = docker::start_detection();
 
@@ -75,7 +76,7 @@ pub fn targets_for_port(port: u16) -> Result<Vec<ResolvedTarget>> {
     let home = crate::project::home_dir();
 
     for entry in entries {
-        if !matches_port_target(&entry, port) {
+        if !matches_port_target(&entry, filter) {
             continue;
         }
         // Skip duplicate PIDs (same process on IPv4 + IPv6).
@@ -101,8 +102,8 @@ pub fn targets_for_port(port: u16) -> Result<Vec<ResolvedTarget>> {
             // proxy listens on both IPv4 and IPv6 with different PIDs.
             if seen_containers.insert(ct.container_id.clone()) {
                 debug!(
-                    "resolved port {port} to container '{}' (proxy pid {})",
-                    ct.container_name, ct.proxy_pid
+                    "resolved port {} to container '{}' (proxy pid {})",
+                    entry.port, ct.container_name, ct.proxy_pid
                 );
                 targets.push(ResolvedTarget::Container(ct));
             }
@@ -117,8 +118,8 @@ pub fn targets_for_port(port: u16) -> Result<Vec<ResolvedTarget>> {
     Ok(targets)
 }
 
-fn matches_port_target(entry: &PortEntry, port: u16) -> bool {
-    entry.port == port && (entry.proto == Protocol::Udp || entry.state == State::Listen)
+fn matches_port_target(entry: &PortEntry, filter: PortFilter) -> bool {
+    filter.matches(entry.port) && (entry.proto == Protocol::Udp || entry.state == State::Listen)
 }
 
 /// Resolve a proxy/helper entry to a unique container target.
@@ -231,16 +232,16 @@ mod tests {
     fn matches_port_target_requires_tcp_listen_state() {
         assert!(matches_port_target(
             &make_entry(8080, Protocol::Tcp, State::Listen, "node"),
-            8080,
+            PortFilter::Single(8080),
         ));
         assert!(matches_port_target(
             &make_entry(53, Protocol::Udp, State::NotApplicable, "dnsmasq"),
-            53,
+            PortFilter::Single(53),
         ));
         assert!(
             !matches_port_target(
                 &make_entry(8080, Protocol::Tcp, State::Established, "curl"),
-                8080,
+                PortFilter::Single(8080),
             ),
             "port-based kill should not target non-listening TCP sockets"
         );

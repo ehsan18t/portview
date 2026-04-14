@@ -167,6 +167,7 @@ Terminate processes by port or PID. Exactly one of `--port` or `--pid` must be p
 
 ```bash
 portlens kill --port 3000          # Free local port :3000 (graceful on Unix)
+portlens kill --port 3000-4000     # Free all listeners in a port range
 portlens kill --pid 12345          # Kill a single PID
 portlens kill --port 3000 --force  # SIGKILL on Unix (Windows is always forceful)
 portlens kill --port 3000 --yes    # Skip the confirmation prompt
@@ -175,14 +176,14 @@ portlens kill --pid 12345 --dry-run --json
 portlens kill --pid 12345 --json
 ```
 
-| Flag           | Short | Description                                                                         |
-| -------------- | ----- | ----------------------------------------------------------------------------------- |
-| `--port <num>` | `-p`  | Kill TCP listeners or UDP binders on this local port (dedups IPv4/IPv6 and workers) |
-| `--pid <num>`  |       | Kill the specified PID                                                              |
-| `--force`      | `-f`  | Forceful termination (SIGKILL on Unix; no-op on Windows - already forceful)         |
-| `--yes`        | `-y`  | Skip interactive confirmation                                                       |
-| `--dry-run`    |       | List resolved targets without signaling anything                                    |
-| `--json`       |       | Emit the kill report or dry-run target list as JSON                                 |
+| Flag            | Short | Description                                                                             |
+| --------------- | ----- | --------------------------------------------------------------------------------------- |
+| `--port <PORT>` | `-p`  | Kill TCP listeners or UDP binders on a local port or range (e.g. `3000` or `3000-4000`) |
+| `--pid <num>`   |       | Kill the specified PID                                                                  |
+| `--force`       | `-f`  | Forceful termination (SIGKILL on Unix; no-op on Windows - already forceful)             |
+| `--yes`         | `-y`  | Skip interactive confirmation                                                           |
+| `--dry-run`     |       | List resolved targets without signaling anything                                        |
+| `--json`        |       | Emit the kill report or dry-run target list as JSON                                     |
 
 Safety: PortLens refuses to kill PID 0 (kernel/idle), PID 1 (init) on Unix, PID 4 (System) on Windows, and its own PID. Permission errors are reported per-PID with a hint to retry elevated; already-exited processes are treated as idempotent successes.
 
