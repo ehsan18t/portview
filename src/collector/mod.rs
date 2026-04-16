@@ -205,8 +205,7 @@ fn refresh_tracked_processes(
 fn current_epoch_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 fn deduplicate_and_sort_entries(entries: Vec<PortEntry>) -> Vec<PortEntry> {

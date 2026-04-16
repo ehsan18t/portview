@@ -68,7 +68,7 @@ fn lookup_container<'a>(
 
     match docker::lookup_published_container(container_map, socket, proto, allow_proxy_fallback) {
         PublishedContainerMatch::Match(container) => Some(container),
-        PublishedContainerMatch::NotFound | PublishedContainerMatch::Ambiguous => None,
+        _ => None,
     }
 }
 
@@ -163,7 +163,11 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_container(name: &str, image: &str) -> docker::ContainerInfo {
-        docker::test_container_info("", name, image)
+        docker::ContainerInfo {
+            id: String::new(),
+            name: name.to_string(),
+            image: image.to_string(),
+        }
     }
 
     fn insert_container(
@@ -173,7 +177,10 @@ mod tests {
         name: &str,
         image: &str,
     ) {
-        docker::insert_test_container(map, Some(address), port, Protocol::Tcp, "", name, image);
+        map.insert(
+            (Some(address), port, Protocol::Tcp),
+            make_container(name, image),
+        );
     }
 
     fn assert_container_name(container: Option<&docker::ContainerInfo>, expected_name: &str) {
@@ -305,23 +312,17 @@ mod tests {
     #[test]
     fn container_lookup_refuses_ambiguous_proxy_matches() {
         let mut map = HashMap::new();
-        docker::insert_test_container(
-            &mut map,
-            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-            8080,
-            Protocol::Tcp,
-            "",
-            "api-a",
-            "node:22",
+        map.insert(
+            (Some(IpAddr::V4(Ipv4Addr::LOCALHOST)), 8080, Protocol::Tcp),
+            make_container("api-a", "node:22"),
         );
-        docker::insert_test_container(
-            &mut map,
-            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
-            8080,
-            Protocol::Tcp,
-            "",
-            "api-b",
-            "node:22",
+        map.insert(
+            (
+                Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+                8080,
+                Protocol::Tcp,
+            ),
+            make_container("api-b", "node:22"),
         );
 
         let container = lookup_container(

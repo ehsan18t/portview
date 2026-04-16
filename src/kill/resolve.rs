@@ -180,7 +180,7 @@ fn container_target_for_entry(
                 entry.port
             );
         }
-        PublishedContainerMatch::NotFound => None,
+        _ => None,
     };
 
     #[cfg(target_os = "linux")]
@@ -266,6 +266,25 @@ mod tests {
         }
     }
 
+    fn insert_test_container(
+        map: &mut ContainerPortMap,
+        host_ip: Option<IpAddr>,
+        port: u16,
+        proto: Protocol,
+        id: &str,
+        name: &str,
+        image: &str,
+    ) {
+        map.insert(
+            (host_ip, port, proto),
+            docker::ContainerInfo {
+                id: id.to_string(),
+                name: name.to_string(),
+                image: image.to_string(),
+            },
+        );
+    }
+
     #[test]
     fn matches_port_target_requires_tcp_listen_state() {
         assert!(matches_port_target(
@@ -309,7 +328,7 @@ mod tests {
         let mut entry = make_entry(8080, Protocol::Tcp, State::Listen, "docker-proxy");
         entry.local_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
         let mut map = ContainerPortMap::new();
-        docker::insert_test_container(
+        insert_test_container(
             &mut map,
             Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
             8080,
@@ -318,7 +337,7 @@ mod tests {
             "api-a",
             "node:22",
         );
-        docker::insert_test_container(
+        insert_test_container(
             &mut map,
             Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
             8080,
@@ -363,7 +382,7 @@ mod tests {
         second.local_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
         let mut map = ContainerPortMap::new();
-        docker::insert_test_container(
+        insert_test_container(
             &mut map,
             None,
             3000,
@@ -372,7 +391,7 @@ mod tests {
             "api-a",
             "node:22",
         );
-        docker::insert_test_container(
+        insert_test_container(
             &mut map,
             None,
             4000,

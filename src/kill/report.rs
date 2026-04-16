@@ -133,7 +133,7 @@ impl KillReportEntry {
                 KillStatus::ContainerNotFound,
                 Some("the container may have been removed".to_owned()),
             ),
-            StopOutcome::Failed => (
+            _ => (
                 KillStatus::ContainerStopFailed,
                 Some("could not reach the container runtime daemon".to_owned()),
             ),
